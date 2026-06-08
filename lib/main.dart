@@ -1,6 +1,10 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'splash_screen.dart';
 import 'login_page.dart';
+import 'payment_page.dart';
+import 'collection_worker.dart';
 
 void main() {
   runApp(const EcoBinApp());
@@ -21,29 +25,140 @@ class EcoBinApp extends StatelessWidget {
           surface: Color(0xFF1E293B), // Slate 900
         ),
       ),
-      home: const EcoBinSplashScreen(
-        nextScreen: EcoBinLoginPage(dashboardScreen: EcoBinHomePage()),
+      home: EcoBinSplashScreen(
+        nextScreen: EcoBinLoginPage(
+          // Provide an empty structure fallback if initialized unauthenticated
+          userDashboardScreen: const EcoBinHomePage(loginData: {}),
+          workerDashboardScreen: const CollectionWorkerPage(),
+        ),
       ),
     );
   }
 }
 
 class EcoBinHomePage extends StatefulWidget {
-  const EcoBinHomePage({super.key});
+  // Added an injection parameter map to smoothly transfer authentication state variables
+  final Map<String, dynamic> loginData;
+  const EcoBinHomePage({super.key, this.loginData = const {}});
 
   @override
   State<EcoBinHomePage> createState() => _EcoBinHomePageState();
 }
 
 class _EcoBinHomePageState extends State<EcoBinHomePage> {
+  // Core Operational States Linked to MongoDB Cloud
   int _ecoPoints = 850;
-  bool _isDateAssigned = true;
+  bool _isLoading = true;
+  bool _isDateAssigned = false;
   bool _isPaymentDone = false;
   int _selectedRating = 0;
   bool _isMissionJoined = false;
 
-  String _userName = "Alex Mercer";
-  // String _userRole = "MEMBER";
+  String _userName = "User Account";
+  String _currentUserId = "";
+  String _nextCollectionDate = "Pending assignment";
+  String _assignedAgentName = "Not yet assigned";
+  double _amountDue = 0.00;
+  List<String> _historicalDates = [];
+
+  // Text Controllers for Input fields
+  final TextEditingController _complaintTextController =
+      TextEditingController();
+  final TextEditingController _feedbackTextController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    debugPrint("🤖 ECOBIN DEBUG: initState() has fired on the Home Page!");
+    _parseInjectedLoginData();
+    _fetchLiveCollectionDashboard();
+  }
+
+  /// Extracts initial runtime data returned from a successful Login network transaction
+  /// Extracts initial runtime data returned from a successful Login network transaction
+  void _parseInjectedLoginData() {
+    if (widget.loginData.isNotEmpty &&
+        widget.loginData['status'] == 'success') {
+      setState(() {
+        // 1. FIRST ASIGN THE CURRENT USER ID SO THE DASHBOARD CAN TALK TO MONGO
+        _currentUserId = widget.loginData['houseId'] ?? "";
+
+        // 2. MAP THE INCOMING PROFILE PROPERTIES TO DYNAMIC VARIABLES
+        _userName = widget.loginData['userName'] ?? "User Account";
+        _ecoPoints = widget.loginData['points'] ?? 0;
+        _amountDue =
+            (widget.loginData['pendingPayment'] as num?)?.toDouble() ?? 0.0;
+        _nextCollectionDate =
+            widget.loginData['wasteCollectionScheduleDate'] ??
+            "Pending assignment";
+        _assignedAgentName =
+            widget.loginData['agentName'] ?? "Not yet assigned";
+
+        _isDateAssigned =
+            _nextCollectionDate != "Pending assignment" &&
+            _nextCollectionDate.isNotEmpty;
+        _isPaymentDone = _amountDue <= 0;
+      });
+    }
+  }
+
+  /// REST Handshake: Fetches live dashboard telemetry parameters from MongoDB Cluster
+  Future<void> _fetchLiveCollectionDashboard() async {
+    // If we don't have a valid house ID yet, bypass loading screen to avoid getting stuck
+    if (_currentUserId.isEmpty) {
+      setState(() {
+        _isLoading = false;
+      });
+      return;
+    }
+
+    debugPrint(
+      "🚀 ECOBIN DEBUG: _fetchLiveCollectionDashboard() started executing!",
+    );
+    try {
+      final url = Uri.parse(
+        'http://110.181.174.87:8081/api/collection/schedule/view/$_currentUserId',
+      );
+
+      final response = await http.get(url).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        if (data['status'] == 'success') {
+          setState(() {
+            _nextCollectionDate =
+                data['nextCollectionDate'] ?? "Pending assignment";
+            _isDateAssigned =
+                _nextCollectionDate != "Pending assignment" &&
+                _nextCollectionDate.isNotEmpty;
+            _assignedAgentName =
+                data['assignedWorkerName'] ?? "Not yet assigned";
+            _amountDue = (data['amountPending'] as num).toDouble();
+            _isPaymentDone = data['paymentStatus'] == 'paid' || _amountDue <= 0;
+
+            if (data['last10CollectedDates'] != null) {
+              _historicalDates = List<String>.from(
+                data['last10CollectedDates'],
+              );
+            }
+            _isLoading = false;
+          });
+          return;
+        }
+      }
+    } catch (e, stacktrace) {
+      debugPrint("🚨 CRITICAL NETWORK REJECTION DETECTED:");
+      debugPrint("Error Details: $e");
+      debugPrint("Stacktrace: $stacktrace");
+    }
+
+    setState(() {
+      _isLoading = false;
+    });
+    _showSnackBar(
+      "⚠️ Running in offline backup mode. Check your server IP connection.",
+    );
+  }
 
   String _getInitials(String name) {
     if (name.isEmpty) return "??";
@@ -52,18 +167,6 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
       return (parts[0][0] + parts[1][0]).toUpperCase();
     }
     return parts[0][0].toUpperCase();
-  }
-
-  // ignore: unused_element
-  void _toggleDashboardState() {
-    setState(() {
-      _isDateAssigned = !_isDateAssigned;
-    });
-    _showSnackBar(
-      _isDateAssigned
-          ? "Switched Dashboard View to 'Date Assigned' state"
-          : "Switched Dashboard View to 'Date Pending' state",
-    );
   }
 
   void _showSnackBar(String message) {
@@ -92,22 +195,29 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
   }
 
   @override
+  void dispose() {
+    _complaintTextController.dispose();
+    _feedbackTextController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF020617),
+        body: Center(
+          child: CircularProgressIndicator(color: Color(0xFF10B981)),
+        ),
+      );
+    }
+
     return Scaffold(
       body: SafeArea(
         child: Column(
           children: [
-            // Top Interactive State Controller
-            // _buildStateController(),
-
-            // App Header Row
             _buildHeader(),
-
-            // Glowing Partition Separator
             _buildGlowingDivider(),
-
-            // Scrollable Content Area
-            // Scrollable Content Area
             Expanded(
               child: SingleChildScrollView(
                 physics: const ClampingScrollPhysics(),
@@ -118,11 +228,8 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Dynamic Status Panel
                     _buildDynamicStatusPanel(),
                     const SizedBox(height: 24),
-
-                    // Core Operations Section
                     const Text(
                       'CORE OPERATIONS',
                       style: TextStyle(
@@ -145,12 +252,14 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                         ),
                         decoration: BoxDecoration(
                           color: _isPaymentDone
-                              ? const Color(0xFF10B981).withValues(alpha: 0.2)
-                              : const Color(0xFFF59E0B).withValues(alpha: 0.2),
+                              ? const Color(0xFF10B981).withOpacity(0.2)
+                              : const Color(0xFFF59E0B).withOpacity(0.2),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Text(
-                          _isPaymentDone ? 'Paid' : '\$12 Due',
+                          _isPaymentDone
+                              ? 'Paid'
+                              : '₹${_amountDue.toStringAsFixed(2)} Due',
                           style: TextStyle(
                             fontSize: 9,
                             fontWeight: FontWeight.bold,
@@ -168,7 +277,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                     const SizedBox(height: 12),
                     _buildOperationCard(
                       icon: Icons.add_circle_outline,
-                      iconColor: const Color(0xFF06B6D4), // Cyan 500
+                      iconColor: const Color(0xFF06B6D4),
                       title: 'Waste collection request',
                       subtitle: 'Book bulky, hazard, or e-waste pickup',
                       onTap: () => _showActionModal(
@@ -179,7 +288,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                     const SizedBox(height: 12),
                     _buildOperationCard(
                       icon: Icons.calendar_month,
-                      iconColor: const Color(0xFFF59E0B), // Amber 500
+                      iconColor: const Color(0xFFF59E0B),
                       title: 'Collection Detail_Schedule_View',
                       subtitle: 'Live routing, maps & route plans',
                       onTap: () => _showActionModal(
@@ -190,7 +299,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                     const SizedBox(height: 12),
                     _buildOperationCard(
                       icon: Icons.warning_amber_rounded,
-                      iconColor: const Color(0xFFF43F5E), // Rose 500
+                      iconColor: const Color(0xFFF43F5E),
                       title: 'Complaint_post',
                       subtitle: 'Report skipped bins, broken assets',
                       onTap: () => _showActionModal(
@@ -201,7 +310,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                     const SizedBox(height: 12),
                     _buildOperationCard(
                       icon: Icons.card_giftcard,
-                      iconColor: const Color(0xFFA855F7), // Purple 500
+                      iconColor: const Color(0xFFA855F7),
                       title: 'Point redeem',
                       subtitle: 'Trade green points for real rewards',
                       trailing: Container(
@@ -210,7 +319,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                           vertical: 6,
                         ),
                         decoration: BoxDecoration(
-                          color: const Color(0xFFA855F7).withValues(alpha: 0.2),
+                          color: const Color(0xFFA855F7).withOpacity(0.2),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Text(
@@ -228,12 +337,8 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                       ),
                     ),
                     const SizedBox(height: 32),
-
-                    // News & Missions Section
                     _buildMissionSection(),
                     const SizedBox(height: 32),
-
-                    // Review & Feedback Form
                     _buildFeedbackSection(),
                     const SizedBox(height: 32),
                   ],
@@ -247,65 +352,6 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
     );
   }
 
-  // --- WIDGET BUILDERS ---
-
-  // Widget _buildStateController() {
-  //   return Container(
-  //     margin: const EdgeInsets.all(12),
-  //     padding: const EdgeInsets.all(12),
-  //     decoration: BoxDecoration(
-  //       color: const Color(0xFF0F172A),
-  //       border: Border.all(color: const Color(0xFF334155)),
-  //       borderRadius: BorderRadius.circular(16),
-  //     ),
-  // child: Row(
-  //   mainAxisAlignment: MainAxisAlignment.spaceBetween,
-  //   children: [
-  // Column(
-  //   crossAxisAlignment: CrossAxisAlignment.start,
-  //   children: [
-  //     Text(
-  //       'INTERACTIVE CONTROLS',
-  //       style: TextStyle(
-  //         fontSize: 10,
-  //         fontWeight: FontWeight.bold,
-  //         color: const Color(0xFF10B981),
-  //       ),
-  //     ),
-  //     const Text(
-  //       'Force App Dashboard State',
-  //       style: TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
-  //     ),
-  //   ],
-  // ),
-  //       ElevatedButton.icon(
-  //         onPressed: _toggleDashboardState,
-  //         icon: Icon(
-  //           _isDateAssigned ? Icons.calendar_today : Icons.hourglass_empty,
-  //           size: 14,
-  //         ),
-  //         label: Text(_isDateAssigned ? "Date Assigned" : "Pending Slot"),
-  //         style: ElevatedButton.styleFrom(
-  //           backgroundColor: _isDateAssigned
-  //               ? const Color(0xFF10B981)
-  //               : const Color(0xFF334155),
-  //           foregroundColor: _isDateAssigned
-  //               ? const Color(0xFF020617)
-  //               : Colors.white,
-  //           textStyle: const TextStyle(
-  //             fontSize: 12,
-  //             fontWeight: FontWeight.bold,
-  //           ),
-  //           shape: RoundedRectangleBorder(
-  //             borderRadius: BorderRadius.circular(10),
-  //           ),
-  //         ),
-  //       ),
-  //     ],
-  //   ),
-  //   );
-  // }
-
   Widget _buildHeader() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
@@ -314,19 +360,6 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
         children: [
           Row(
             children: [
-              // Container(
-              //   width: 36,
-              //   height: 36,
-              //   decoration: BoxDecoration(
-              //     color: const Color(0xFF10B981),
-              //     borderRadius: BorderRadius.circular(12),
-              //   ),
-              //   child: const Icon(
-              //     Icons.group_add_outlined,
-              //     color: Color.fromARGB(255, 20, 27, 62),
-              //     size: 20,
-              //   ),
-              // ),
               const SizedBox(width: 10),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -371,7 +404,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
               decoration: BoxDecoration(
                 color: const Color(0xFF1E293B),
                 border: Border.all(
-                  color: const Color(0xFF334155).withValues(alpha: 0.8),
+                  color: const Color(0xFF334155).withOpacity(0.8),
                 ),
                 borderRadius: BorderRadius.circular(30),
               ),
@@ -379,9 +412,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                 children: [
                   CircleAvatar(
                     radius: 14,
-                    backgroundColor: const Color(
-                      0xFF10B981,
-                    ).withValues(alpha: 0.2),
+                    backgroundColor: const Color(0xFF10B981).withOpacity(0.2),
                     child: Text(
                       _getInitials(_userName),
                       style: const TextStyle(
@@ -392,26 +423,13 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Text(
-                      //   // _userRole,
-                      //   style: const TextStyle(
-                      //     fontSize: 8,
-                      //     color: Color(0xFF94A3B8),
-                      //     fontWeight: FontWeight.bold,
-                      //   ),
-                      // ),
-                      Text(
-                        _userName,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Color(0xFFE2E8F0),
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
+                  Text(
+                    _userName,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFFE2E8F0),
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ],
               ),
@@ -426,41 +444,36 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
     return Stack(
       alignment: Alignment.center,
       children: [
-        // Soft ambient glow behind the line
         Container(
           height: 16,
           width: double.infinity,
           decoration: BoxDecoration(
             gradient: RadialGradient(
               colors: [
-                const Color(0xFF10B981).withValues(alpha: 0.15),
-                const Color(0xFF10B981).withValues(alpha: 0.0),
+                const Color(0xFF10B981).withOpacity(0.15),
+                const Color(0xFF10B981).withOpacity(0.0),
               ],
               radius: 5.0,
             ),
           ),
         ),
-        // Sharp line that spans fully from side to side
         Container(
           height: height,
           width: double.infinity,
-          color: const Color(0xFF10B981).withValues(alpha: 0.35),
+          color: const Color(0xFF10B981).withOpacity(0.35),
         ),
-        // Premium central icon badge
         Container(
           padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
-            color: const Color(
-              0xFF020617,
-            ), // Slate 950 (scaffold background color)
+            color: const Color(0xFF020617),
             shape: BoxShape.circle,
             border: Border.all(
-              color: const Color(0xFF10B981).withValues(alpha: 0.4),
+              color: const Color(0xFF10B981).withOpacity(0.4),
               width: 1,
             ),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                color: const Color(0xFF10B981).withOpacity(0.15),
                 blurRadius: 4,
                 spreadRadius: 1,
               ),
@@ -485,7 +498,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
           borderRadius: BorderRadius.circular(24),
           boxShadow: [
             BoxShadow(
-              color: const Color(0xFF10B981).withValues(alpha: 0.15),
+              color: const Color(0xFF10B981).withOpacity(0.15),
               blurRadius: 20,
               offset: const Offset(0, 10),
             ),
@@ -503,11 +516,9 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.15),
+                    color: Colors.white.withOpacity(0.15),
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.1),
-                    ),
+                    border: Border.all(color: Colors.white.withOpacity(0.1)),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -538,7 +549,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.2),
+                    color: Colors.black.withOpacity(0.2),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
@@ -561,10 +572,10 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
               ),
             ),
             const SizedBox(height: 4),
-            const Text(
-              '18 JUN, 2026',
-              style: TextStyle(
-                fontSize: 28,
+            Text(
+              _nextCollectionDate.toUpperCase(),
+              style: const TextStyle(
+                fontSize: 24,
                 fontWeight: FontWeight.w900,
                 letterSpacing: -0.5,
               ),
@@ -587,37 +598,20 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 RichText(
-                  text: const TextSpan(
+                  text: TextSpan(
                     text: 'Assigned Agent: ',
-                    style: TextStyle(fontSize: 12, color: Color(0xE6F0FDF4)),
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xE6F0FDF4),
+                    ),
                     children: [
                       TextSpan(
-                        text: 'Dave R.',
-                        style: TextStyle(fontWeight: FontWeight.bold),
+                        text: _assignedAgentName,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
                     ],
                   ),
                 ),
-                // TextButton(
-                //   onPressed: () => _showActionModal(
-                //     'Schedule Details & Map',
-                //     _buildScheduleModalContent(),
-                //   ),
-                //   style: TextButton.styleFrom(
-                //     padding: EdgeInsets.zero,
-                //     minimumSize: Size.zero,
-                //     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                //   ),
-                //   child: const Text(
-                //     'Track Route →',
-                //     style: TextStyle(
-                //       fontSize: 12,
-                //       color: Colors.white,
-                //       decoration: TextDecoration.underline,
-                //       fontWeight: FontWeight.bold,
-                //     ),
-                //   ),
-                // ),
               ],
             ),
           ],
@@ -643,10 +637,10 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF59E0B).withValues(alpha: 0.1),
+                    color: const Color(0xFFF59E0B).withOpacity(0.1),
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(
-                      color: const Color(0xFFF59E0B).withValues(alpha: 0.2),
+                      color: const Color(0xFFF59E0B).withOpacity(0.2),
                     ),
                   ),
                   child: const Text(
@@ -664,7 +658,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.3),
+                    color: Colors.black.withOpacity(0.3),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
@@ -796,7 +790,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: iconColor.withValues(alpha: 0.1),
+                color: iconColor.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Icon(icon, color: iconColor, size: 22),
@@ -927,7 +921,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF020617).withValues(alpha: 0.4),
+                  color: const Color(0xFF020617).withOpacity(0.4),
                   border: Border.all(color: const Color(0xFF1E293B)),
                   borderRadius: BorderRadius.circular(16),
                 ),
@@ -1097,6 +1091,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
               ),
               const SizedBox(height: 16),
               TextField(
+                controller: _feedbackTextController,
                 maxLines: 3,
                 style: const TextStyle(fontSize: 12, color: Colors.white),
                 decoration: InputDecoration(
@@ -1119,15 +1114,39 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: () {
+                  onPressed: () async {
                     if (_selectedRating == 0) {
                       _showSnackBar("Please select a star rating first!");
                       return;
                     }
-                    _showSnackBar("Thank you for your valuable feedback! 💚");
-                    setState(() {
-                      _selectedRating = 0;
-                    });
+                    _showSnackBar("Syncing feedback parameters... 🚀");
+                    try {
+                      final url = Uri.parse(
+                        'http://10.181.174.87:8081/api/feedback/submit',
+                      );
+                      final response = await http.post(
+                        url,
+                        headers: {'Content-Type': 'application/json'},
+                        body: jsonEncode({
+                          'feedbackDescription': _feedbackTextController.text
+                              .trim(),
+                          'rating': _selectedRating,
+                        }),
+                      );
+                      if (response.statusCode == 200) {
+                        _showSnackBar(
+                          "Thank you for your valuable feedback! 💚",
+                        );
+                        setState(() {
+                          _selectedRating = 0;
+                        });
+                        _feedbackTextController.clear();
+                      }
+                    } catch (e) {
+                      _showSnackBar(
+                        "❌ Handshake timeout: Failed to commit evaluation metric.",
+                      );
+                    }
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF334155),
@@ -1208,30 +1227,24 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
           ),
         ],
         onTap: (index) {
-          if (index == 1) {
+          if (index == 1)
             _showActionModal(
               'Collection Payment Settle',
               _buildPaymentModalContent(),
             );
-          }
-          if (index == 2) {
+          if (index == 2)
             _showActionModal('Request Collection', _buildRequestModalContent());
-          }
-          if (index == 3) {
+          if (index == 3)
             _showActionModal(
               'Submit Complaint / Report',
               _buildComplaintModalContent(),
             );
-          }
-          if (index == 4) {
+          if (index == 4)
             _showActionModal('Redeem Rewards', _buildRedeemModalContent());
-          }
         },
       ),
     );
   }
-
-  // --- MODAL SYSTEM AND CONTENTS ---
 
   void _showActionModal(String title, Widget content) {
     showModalBottomSheet(
@@ -1282,6 +1295,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
   }
 
   Widget _buildPaymentModalContent() {
+    final double baseFee = _amountDue - 2.0 > 0 ? _amountDue - 2.0 : 10.0;
     return StatefulBuilder(
       builder: (context, setModalState) {
         return Column(
@@ -1290,9 +1304,9 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
               width: double.infinity,
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                color: const Color(0xFF10B981).withOpacity(0.1),
                 border: Border.all(
-                  color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                  color: const Color(0xFF10B981).withOpacity(0.2),
                 ),
                 borderRadius: BorderRadius.circular(16),
               ),
@@ -1309,7 +1323,9 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    _isPaymentDone ? '\$0.00' : '\$12.00',
+                    _isPaymentDone
+                        ? '₹0.00'
+                        : '₹${_amountDue.toStringAsFixed(2)}',
                     style: const TextStyle(
                       fontSize: 28,
                       fontWeight: FontWeight.w900,
@@ -1326,22 +1342,35 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
             ),
             const SizedBox(height: 16),
             if (!_isPaymentDone) ...[
-              _buildModalRowItem('Base Municipal Waste Fee', '\$10.00'),
+              _buildModalRowItem(
+                'Base Municipal Waste Fee',
+                '₹${baseFee.toStringAsFixed(2)}',
+              ),
               const SizedBox(height: 8),
-              _buildModalRowItem('E-Waste Surcharge', '\$2.00'),
+              _buildModalRowItem('E-Waste Surcharge', '₹2.00'),
               const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: () {
-                    setState(() {
-                      _isPaymentDone = true;
-                    });
-                    setModalState(() {});
+                  onPressed: () async {
                     Navigator.pop(context);
-                    _showSnackBar(
-                      "💳 Payment processed successfully! Thank you.",
+                    final bool? result = await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) =>
+                            PaymentPage(amountToPay: _amountDue),
+                      ),
                     );
+                    if (result == true) {
+                      setState(() {
+                        _isPaymentDone = true;
+                        _ecoPoints += 50;
+                      });
+                      _showSnackBar(
+                        "💳 Payment recorded! Balance successfully settled.",
+                      );
+                      _fetchLiveCollectionDashboard();
+                    }
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF10B981),
@@ -1351,9 +1380,12 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                     ),
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
-                  child: const Text(
-                    'Authorize Payment (\$12.00)',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900),
+                  child: Text(
+                    'Authorize Payment (₹${_amountDue.toStringAsFixed(2)})',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                 ),
               ),
@@ -1377,33 +1409,19 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
   }
 
   Widget _buildRequestModalContent() {
-    // --- MOCK BACKEND DATA (Simulating Spring Boot Responses) ---
-    // Change these variables to test both logic flows:
     final DateTime today = DateTime.now();
-
-    // Example 1: Last collection was 18 days ago (Normal fee window)
     final DateTime lastCollectedDate = today.subtract(const Duration(days: 18));
-
-    // Example 2 (Uncomment to test double fee): Last collection was 5 days ago
-    // final DateTime lastCollectedDate = today.subtract(const Duration(days: 5));
-
     final int daysSinceLastCollection = today
         .difference(lastCollectedDate)
         .inDays;
-
-    // Set baseline prices
     const double normalAmount = 10.00;
     final double calculatedAmount = daysSinceLastCollection > 15
         ? normalAmount
         : (normalAmount * 2);
-
-    // Formatting date strings neatly
     final String formattedLastDate =
         "${lastCollectedDate.day} ${_getMonthName(lastCollectedDate.month)}, ${lastCollectedDate.year}";
-
-    // Setup logic for next collection milestone
     final String nextCollectionText = _isDateAssigned
-        ? "18 Jun, 2026"
+        ? _nextCollectionDate
         : "will be assigned within 24 hours";
 
     return StatefulBuilder(
@@ -1411,7 +1429,6 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // --- TIME LOG MILESTONES PANEL ---
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(16),
@@ -1473,20 +1490,14 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                 ],
               ),
             ),
-
-            // --- DYNAMIC FEE NOTICE ---
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(14),
               margin: const EdgeInsets.only(bottom: 20),
               decoration: BoxDecoration(
                 color: calculatedAmount > normalAmount
-                    ? const Color(0xFFF43F5E).withOpacity(
-                        0.1,
-                      ) // Warning pink for rush payment
-                    : const Color(
-                        0xFF10B981,
-                      ).withOpacity(0.1), // Green for standard payment
+                    ? const Color(0xFFF43F5E).withOpacity(0.1)
+                    : const Color(0xFF10B981).withOpacity(0.1),
                 border: Border.all(
                   color: calculatedAmount > normalAmount
                       ? const Color(0xFFF43F5E).withOpacity(0.3)
@@ -1528,7 +1539,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                     ),
                   ),
                   Text(
-                    '\$${calculatedAmount.toStringAsFixed(2)}',
+                    '₹${calculatedAmount.toStringAsFixed(2)}',
                     style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w900,
@@ -1538,8 +1549,6 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                 ],
               ),
             ),
-
-            // --- REASON INPUT FIELD ---
             const Text(
               'REASON FOR REQUEST (OPTIONAL)',
               style: TextStyle(
@@ -1569,20 +1578,47 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
               ),
             ),
             const SizedBox(height: 20),
-
-            // --- SUBMIT ACTION BUTTON ---
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: () {
-                  // Closes the current modal sheet completely
+                onPressed: () async {
                   Navigator.pop(context);
-
-                  // Immediately invokes your pre-built payment modal sheet view
-                  _showActionModal(
-                    'Collection Payment Settle',
-                    _buildPaymentModalContent(),
+                  final bool? result = await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) =>
+                          PaymentPage(amountToPay: calculatedAmount),
+                    ),
                   );
+                  if (result == true) {
+                    _showSnackBar(
+                      "Processing instant cleanup placement log... ⏳",
+                    );
+                    try {
+                      final url = Uri.parse(
+                        'http://10.181.174.87:8081/api/collection/immediate-request',
+                      );
+                      final response = await http.post(
+                        url,
+                        headers: {'Content-Type': 'application/json'},
+                        body: jsonEncode({
+                          'userId': _currentUserId,
+                          'reason':
+                              'Instant user requested manual trigger placement context',
+                        }),
+                      );
+                      if (response.statusCode == 200) {
+                        _showSnackBar(
+                          "🚀 Request committed! Cluster database synchronized successfully.",
+                        );
+                        _fetchLiveCollectionDashboard();
+                      }
+                    } catch (e) {
+                      _showSnackBar(
+                        "⚠ Network write timeout, but payment logged successfully.",
+                      );
+                    }
+                  }
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF10B981),
@@ -1604,7 +1640,6 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
     );
   }
 
-  // Quick helper extension method inside the file to parse standard integer months into string blocks
   String _getMonthName(int monthIndex) {
     const months = [
       'JAN',
@@ -1624,21 +1659,12 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
   }
 
   Widget _buildScheduleModalContent() {
-    // --- MOCK BACKEND DATA (Simulating Spring Boot JSON Array Response) ---
-    final List<Map<String, String>> collectionHistory = [
-      {'date': '24 May, 2026', 'agent': 'Dave R.', 'status': 'Paid'},
-      {'date': '10 May, 2026', 'agent': 'Marcus K.', 'status': 'Paid'},
-      {'date': '26 Apr, 2026', 'agent': 'Dave R.', 'status': 'Paid'},
-      {'date': '12 Apr, 2026', 'agent': 'Suresh Kumar', 'status': 'Paid'},
-      {'date': '29 Mar, 2026', 'agent': 'Marcus K.', 'status': 'Paid'},
-      {'date': '15 Mar, 2026', 'agent': 'Dave R.', 'status': 'Paid'},
-    ];
-
-    // Read current system states
     final String nextDateText = _isDateAssigned
-        ? "18 JUN, 2026"
+        ? _nextCollectionDate
         : "Pending Assignment";
-    final String agentText = _isDateAssigned ? "Dave R." : "Not Assigned Yet";
+    final String agentText = _isDateAssigned
+        ? _assignedAgentName
+        : "Not Assigned Yet";
     final String paymentStatusText = _isPaymentDone ? "Paid" : "Pending";
     final Color paymentColor = _isPaymentDone
         ? const Color(0xFF10B981)
@@ -1647,7 +1673,6 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // --- UPCOMING SCHEDULE CARD ---
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(16),
@@ -1707,10 +1732,8 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
           ),
         ),
         const SizedBox(height: 24),
-
-        // --- HISTORICAL LOGS SECTION ---
         const Text(
-          'LAST 6 COLLECTIONS HISTORY',
+          'COLLECTIONS HISTORY',
           style: TextStyle(
             fontSize: 10,
             fontWeight: FontWeight.w800,
@@ -1719,67 +1742,66 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
           ),
         ),
         const SizedBox(height: 12),
-
-        // Scrollable ListView container mapping history items dynamically
         Container(
-          constraints: const BoxConstraints(
-            maxHeight: 280,
-          ), // Correct Flutter syntax
-          child: ListView.separated(
-            shrinkWrap: true,
-            physics: const ClampingScrollPhysics(),
-            itemCount: collectionHistory.length,
-            separatorBuilder: (context, index) =>
-                const Divider(color: Color(0xFF1E293B), height: 1),
-            itemBuilder: (context, index) {
-              final historyItem = collectionHistory[index];
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12.0),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          historyItem['date']!,
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
+          constraints: const BoxConstraints(maxHeight: 280),
+          child: _historicalDates.isEmpty
+              ? const Center(
+                  child: Text(
+                    "No historical records found.",
+                    style: TextStyle(color: Color(0xFF64748B), fontSize: 12),
+                  ),
+                )
+              : ListView.separated(
+                  shrinkWrap: true,
+                  physics: const ClampingScrollPhysics(),
+                  itemCount: _historicalDates.length,
+                  separatorBuilder: (context, index) =>
+                      const Divider(color: Color(0xFF1E293B), height: 1),
+                  itemBuilder: (context, index) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12.0),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _historicalDates[index],
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Agent: $_assignedAgentName',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFF64748B),
+                                ),
+                              ),
+                            ],
                           ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          'Agent: ${historyItem['agent']}',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: Color(0xFF64748B),
+                          const Text(
+                            'Completed',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF10B981),
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                    Text(
-                      historyItem['status']!,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: Color(
-                          0xFF10B981,
-                        ), // Standardized green since history logs are paid invoices
+                        ],
                       ),
-                    ),
-                  ],
+                    );
+                  },
                 ),
-              );
-            },
-          ),
         ),
       ],
     );
   }
 
-  // Quick helper structure to clean up duplicated meta-rows
   Widget _buildScheduleRow(String label, String value, {bool isBold = false}) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1846,6 +1868,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
         ),
         const SizedBox(height: 16),
         TextField(
+          controller: _complaintTextController,
           maxLines: 3,
           style: const TextStyle(fontSize: 12),
           decoration: InputDecoration(
@@ -1865,10 +1888,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             color: const Color(0xFF020617),
-            border: Border.all(
-              color: const Color(0xFF1E293B),
-              style: BorderStyle.solid,
-            ),
+            border: Border.all(color: const Color(0xFF1E293B)),
             borderRadius: BorderRadius.circular(12),
           ),
           child: Column(
@@ -1894,11 +1914,42 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
         SizedBox(
           width: double.infinity,
           child: ElevatedButton(
-            onPressed: () {
+            onPressed: () async {
+              if (_complaintTextController.text.trim().isEmpty) {
+                _showSnackBar("Please enter a description for your complaint.");
+                return;
+              }
               Navigator.pop(context);
-              _showSnackBar(
-                "📋 Complaint filed. Incident ticket #INC-803 logged.",
-              );
+              _showSnackBar("Submitting incident ticket... ⏳");
+              try {
+                final url = Uri.parse(
+                  'http://10.181.174.87:8081/api/complaint/submit',
+                );
+                final response = await http.post(
+                  url,
+                  headers: {'Content-Type': 'application/json'},
+                  body: jsonEncode({
+                    'complaintDescription': _complaintTextController.text
+                        .trim(),
+                    'image': '',
+                  }),
+                );
+                if (response.statusCode == 200) {
+                  final Map<String, dynamic> resData = jsonDecode(
+                    response.body,
+                  );
+                  _showSnackBar(
+                    "📋 Ticket logged successfully! ID: ${resData['complaintId']}",
+                  );
+                  _complaintTextController.clear();
+                } else {
+                  _showSnackBar("❌ Submission rejected by server controller.");
+                }
+              } catch (e) {
+                _showSnackBar(
+                  "❌ Connection Dropped: Check if backend server is online.",
+                );
+              }
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFFF43F5E),
@@ -1919,32 +1970,151 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
   }
 
   Widget _buildRedeemModalContent() {
-    return StatefulBuilder(
-      builder: (context, setModalState) {
-        return Column(
-          children: [
-            _buildRedeemItem(
-              '🌲',
-              'Sponsor 1 Forest Tree',
-              'Planted in dry ecological zones',
-              100,
-              () => _handleRedeem(100, 'Sponsor 1 Forest Tree', setModalState),
+    return Column(
+      children: [
+        _buildRedeemItem(
+          '🌲',
+          'Sponsor 1 Forest Tree',
+          'Planted in dry ecological zones',
+          100,
+          () => _handleRedeem(100, 'Sponsor 1 Forest Tree'),
+        ),
+        const SizedBox(height: 8),
+        _buildRedeemItem(
+          '☕',
+          'Reusable Ceramic Mug',
+          'Collect at local green outlets',
+          250,
+          () => _handleRedeem(250, 'Reusable Ceramic Mug'),
+        ),
+        const SizedBox(height: 8),
+        _buildRedeemItem(
+          '🎫',
+          '\$10 Waste Fee Waiver',
+          'Deducted automatically from bills',
+          500,
+          () => _handleRedeem(500, '\$10 Waste Fee Waiver'),
+        ),
+      ],
+    );
+  }
+
+  void _handleRedeem(int cost, String rewardName) async {
+    if (_ecoPoints < cost) {
+      _showSnackBar("⚠️ Insufficient EcoPoints for this reward.");
+      return;
+    }
+    Navigator.pop(context);
+    _showSnackBar("Processing token voucher conversion... 🌲");
+
+    String redeemTypeParam = "cup";
+    if (rewardName.contains("Tree")) redeemTypeParam = "sponsor_tree";
+    if (rewardName.contains("Waiver")) redeemTypeParam = "payment_reduction";
+
+    try {
+      final url = Uri.parse('http://10.181.174.87:8081/api/payment/redeem');
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'userId': _currentUserId,
+          'redeemType': redeemTypeParam,
+        }),
+      );
+      if (response.statusCode == 200) {
+        setState(() {
+          _ecoPoints -= cost;
+        });
+        _showSnackBar("Successfully redeemed: $rewardName! 🎉");
+        _fetchLiveCollectionDashboard();
+      } else {
+        _showSnackBar("❌ Redemption process rejected by server module rules.");
+      }
+    } catch (e) {
+      _showSnackBar(
+        "❌ Infrastructure Error: Server fallback timeout exception.",
+      );
+    }
+  }
+
+  void _showDeleteAccountConfirmationDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF0F172A),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+            side: const BorderSide(color: Color(0xFFF43F5E), width: 1.5),
+          ),
+          title: Row(
+            children: const [
+              Icon(Icons.warning_amber_rounded, color: Color(0xFFF43F5E)),
+              SizedBox(width: 10),
+              Text(
+                'Delete Account?',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          content: const Text(
+            'Are you sure you want to permanently delete your account? This action is irreversible.',
+            style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 13),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(
+                  color: Color(0xFF94A3B8),
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
-            const SizedBox(height: 8),
-            _buildRedeemItem(
-              '☕',
-              'Reusable Ceramic Mug',
-              'Collect at local green outlets',
-              250,
-              () => _handleRedeem(250, 'Reusable Ceramic Mug', setModalState),
-            ),
-            const SizedBox(height: 8),
-            _buildRedeemItem(
-              '🎫',
-              '\$10 Waste Fee Waiver',
-              'Deducted automatically from bills',
-              500,
-              () => _handleRedeem(500, '\$10 Waste Fee Waiver', setModalState),
+            ElevatedButton(
+              onPressed: () async {
+                _showSnackBar("Processing structural data removal... ⏳");
+                try {
+                  final url = Uri.parse(
+                    'http://10.181.174.87:8081/api/account/user/MEMBER_77',
+                  );
+                  final response = await http.delete(url);
+                  if (response.statusCode == 200) {
+                    setState(() {
+                      _userName = "Guest User";
+                      _ecoPoints = 0;
+                    });
+                    Navigator.of(context).pop();
+                    Navigator.of(this.context).pop();
+                    _showSnackBar(
+                      "⚠️ Account data permanently removed from server cluster.",
+                    );
+                  } else {
+                    _showSnackBar(
+                      "❌ Database rejection error code: ${response.statusCode}",
+                    );
+                  }
+                } catch (e) {
+                  _showSnackBar(
+                    "❌ Network Handshake dropped: Check Spring Boot execution.",
+                  );
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFF43F5E),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              child: const Text(
+                'Delete Account',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
             ),
           ],
         );
@@ -1952,131 +2122,238 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
     );
   }
 
-  void _handleRedeem(int cost, String rewardName, StateSetter setModalState) {
-    if (_ecoPoints >= cost) {
-      setState(() {
-        _ecoPoints -= cost;
-      });
-      setModalState(() {});
-      Navigator.pop(context);
-      _showSnackBar("Successfully redeemed: $rewardName! 🎉");
-    } else {
-      _showSnackBar("⚠️ Insufficient EcoPoints for this reward.");
-    }
-  }
-
-  // --- HELPER CONSTRUCTORS ---
-
-  Widget _buildModalRowItem(String label, String value) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        border: Border.all(
-          color: const Color(0xFF334155).withValues(alpha: 0.4),
-        ),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            label,
-            style: const TextStyle(fontSize: 12, color: Color(0xFFCBD5E1)),
-          ),
-          Text(
-            value,
-            style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-            ),
-          ),
-        ],
-      ),
+  void _showEditNameDialog() {
+    final TextEditingController controller = TextEditingController(
+      text: _userName,
     );
-  }
-
-  Widget _buildGridSelectButton(String text, bool isSelected) {
-    return Container(
-      alignment: Alignment.centerLeft,
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: isSelected
-            ? const Color(0xFF10B981).withValues(alpha: 0.1)
-            : Colors.transparent,
-        border: Border.all(
-          color: isSelected ? const Color(0xFF10B981) : const Color(0xFF334155),
-        ),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.bold,
-          color: isSelected ? const Color(0xFF10B981) : const Color(0xFF94A3B8),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTimelineTile(String datetime, String desc, bool isUpcoming) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Column(
-          children: [
-            Container(
-              width: 10,
-              height: 10,
-              decoration: BoxDecoration(
-                color: isUpcoming
-                    ? const Color(0xFF10B981)
-                    : const Color(0xFF475569),
-                shape: BoxShape.circle,
-                boxShadow: isUpcoming
-                    ? [
-                        BoxShadow(
-                          color: const Color(0xFF10B981).withValues(alpha: 0.4),
-                          blurRadius: 6,
-                        ),
-                      ]
-                    : null,
-              ),
-            ),
-            Container(width: 1, height: 45, color: const Color(0xFF334155)),
-          ],
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                datetime,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: isUpcoming
-                      ? const Color(0xFFE2E8F0)
-                      : const Color(0xFF64748B),
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF0F172A),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: const BorderSide(color: Color(0xFF1E293B)),
+          ),
+          title: const Text(
+            'Edit Profile Name',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          ),
+          content: TextField(
+            controller: controller,
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+              hintText: 'Enter new name',
+              hintStyle: const TextStyle(color: Color(0xFF475569)),
+              enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(
+                  color: const Color(0xFF10B981).withOpacity(0.5),
                 ),
               ),
-              const SizedBox(height: 2),
-              Text(
-                desc,
-                style: TextStyle(
-                  fontSize: 10,
-                  color: isUpcoming
-                      ? const Color(0xFF94A3B8)
-                      : const Color(0xFF475569),
+              focusedBorder: const UnderlineInputBorder(
+                borderSide: BorderSide(color: Color(0xFF10B981)),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(color: Color(0xFF94A3B8)),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (controller.text.trim().isNotEmpty) {
+                  setState(() {
+                    _userName = controller.text.trim();
+                  });
+                  Navigator.pop(context);
+                  _showSnackBar("Profile updated: $_userName 🌿");
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF10B981),
+                foregroundColor: const Color(0xFF020617),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              child: const Text(
+                'Save',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildProfileModalContent() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E293B),
+            border: Border.all(color: const Color(0xFF334155).withOpacity(0.5)),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Row(
+            children: [
+              CircleAvatar(
+                radius: 28,
+                backgroundColor: const Color(0xFF10B981).withOpacity(0.15),
+                child: Text(
+                  _getInitials(_userName),
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF10B981),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _userName,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    const Text(
+                      'user.profile@ecobin.com',
+                      style: TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
         ),
+        const SizedBox(height: 20),
+        const Text(
+          'ACCOUNT OPERATIONS',
+          style: TextStyle(
+            fontSize: 9,
+            fontWeight: FontWeight.bold,
+            color: Color(0xFF94A3B8),
+            letterSpacing: 1,
+          ),
+        ),
+        const SizedBox(height: 10),
+        _buildProfileOptionItem(
+          icon: Icons.edit,
+          iconColor: const Color(0xFF10B981),
+          title: 'Update Profile Name (Demo)',
+          subtitle: 'Change display name and update avatar initials',
+          onTap: () {
+            Navigator.pop(context);
+            _showEditNameDialog();
+          },
+        ),
+        const SizedBox(height: 10),
+        _buildProfileOptionItem(
+          icon: Icons.logout,
+          iconColor: const Color(0xFFF59E0B),
+          title: 'Sign Out / Logout',
+          subtitle: 'Disconnect your account from this device',
+          onTap: () {
+            Navigator.pop(context);
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(
+                builder: (context) => const EcoBinLoginPage(
+                  userDashboardScreen: EcoBinHomePage(),
+                  workerDashboardScreen: CollectionWorkerPage(),
+                ),
+              ),
+            );
+            _showSnackBar("👋 Logged out successfully.");
+          },
+        ),
+        const SizedBox(height: 10),
+        _buildProfileOptionItem(
+          icon: Icons.delete_forever,
+          iconColor: const Color(0xFFF43F5E),
+          title: 'Delete Account',
+          subtitle: 'Permanently remove your account and data',
+          onTap: () {
+            _showDeleteAccountConfirmationDialog();
+          },
+        ),
       ],
+    );
+  }
+
+  Widget _buildProfileOptionItem({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0F172A),
+          border: Border.all(color: const Color(0xFF1E293B)),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: iconColor.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, color: iconColor, size: 18),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFFE2E8F0),
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      fontSize: 9,
+                      color: Color(0xFF94A3B8),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(
+              Icons.arrow_forward_ios,
+              size: 10,
+              color: Color(0xFF475569),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -2091,9 +2368,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: const Color(0xFF1E293B),
-        border: Border.all(
-          color: const Color(0xFF334155).withValues(alpha: 0.5),
-        ),
+        border: Border.all(color: const Color(0xFF334155).withOpacity(0.5)),
         borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
@@ -2146,330 +2421,31 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
     );
   }
 
-  void _showDeleteAccountConfirmationDialog() {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF0F172A),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(24),
-            side: const BorderSide(color: Color(0xFFF43F5E), width: 1.5),
+  Widget _buildModalRowItem(String label, String value) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B),
+        border: Border.all(color: const Color(0xFF334155).withOpacity(0.4)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(fontSize: 12, color: Color(0xFFCBD5E1)),
           ),
-          title: Row(
-            children: const [
-              Icon(Icons.warning_amber_rounded, color: Color(0xFFF43F5E)),
-              SizedBox(width: 10),
-              Text(
-                'Delete Account?',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-          content: const Text(
-            'Are you sure you want to permanently delete your account? This action is irreversible and all your EcoPoints data will be lost.',
-            style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 13),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-              child: const Text(
-                'Cancel',
-                style: TextStyle(
-                  color: Color(0xFF94A3B8),
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                setState(() {
-                  _userName = "Guest User";
-                  _ecoPoints = 0;
-                });
-                Navigator.of(context).pop();
-                Navigator.of(this.context).pop();
-                _showSnackBar("⚠️ Account permanently deleted.");
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFF43F5E),
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-              child: const Text(
-                'Delete Account',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _showEditNameDialog() {
-    final TextEditingController controller = TextEditingController(
-      text: _userName,
-    );
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF0F172A),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-            side: const BorderSide(color: Color(0xFF1E293B)),
-          ),
-          title: const Text(
-            'Edit Profile Name',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-          ),
-          content: TextField(
-            controller: controller,
-            style: const TextStyle(color: Colors.white),
-            decoration: InputDecoration(
-              hintText: 'Enter new name',
-              hintStyle: const TextStyle(color: Color(0xFF475569)),
-              enabledBorder: UnderlineInputBorder(
-                borderSide: BorderSide(
-                  color: const Color(0xFF10B981).withValues(alpha: 0.5),
-                ),
-              ),
-              focusedBorder: const UnderlineInputBorder(
-                borderSide: BorderSide(color: Color(0xFF10B981)),
-              ),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text(
-                'Cancel',
-                style: TextStyle(color: Color(0xFF94A3B8)),
-              ),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                if (controller.text.trim().isNotEmpty) {
-                  setState(() {
-                    _userName = controller.text.trim();
-                  });
-                  Navigator.pop(context);
-                  _showSnackBar("Profile updated: $_userName 🌿");
-                }
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF10B981),
-                foregroundColor: const Color(0xFF020617),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              child: const Text(
-                'Save',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildProfileModalContent() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1E293B),
-            border: Border.all(
-              color: const Color(0xFF334155).withValues(alpha: 0.5),
-            ),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Row(
-            children: [
-              CircleAvatar(
-                radius: 28,
-                backgroundColor: const Color(
-                  0xFF10B981,
-                ).withValues(alpha: 0.15),
-                child: Text(
-                  _getInitials(_userName),
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF10B981),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _userName,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    // Text(
-                    // _userRole,
-                    // style: const TextStyle(
-                    //   fontSize: 10,
-                    //   color: Color(0xFF10B981),
-                    //   fontWeight: FontWeight.bold,
-                    //   letterSpacing: 1,
-                    // ),
-                    // ),
-                    const SizedBox(height: 2),
-                    const Text(
-                      'alex.mercer@ecobin.com',
-                      style: TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 20),
-        const Text(
-          'ACCOUNT OPERATIONS',
-          style: TextStyle(
-            fontSize: 9,
-            fontWeight: FontWeight.bold,
-            color: Color(0xFF94A3B8),
-            letterSpacing: 1,
-          ),
-        ),
-        const SizedBox(height: 10),
-        _buildProfileOptionItem(
-          icon: Icons.edit,
-          iconColor: const Color(0xFF10B981),
-          title: 'Update Profile Name (Demo)',
-          subtitle: 'Change display name and update avatar initials',
-          onTap: () {
-            Navigator.pop(context);
-            _showEditNameDialog();
-          },
-        ),
-        const SizedBox(height: 10),
-        _buildProfileOptionItem(
-          icon: Icons.logout,
-          iconColor: const Color(0xFFF59E0B),
-          title: 'Sign Out / Logout',
-          subtitle: 'Disconnect your account from this device',
-          onTap: () {
-            Navigator.pop(context);
-            _showSnackBar("👋 Logged out successfully (Demo mode).");
-          },
-        ),
-        const SizedBox(height: 10),
-        _buildProfileOptionItem(
-          icon: Icons.delete_forever,
-          iconColor: const Color(0xFFF43F5E),
-          title: 'Delete Account',
-          subtitle: 'Permanently remove your account and data',
-          onTap: () {
-            _showDeleteAccountConfirmationDialog();
-          },
-        ),
-      ],
-    );
-  }
-
-  Widget _buildProfileOptionItem({
-    required IconData icon,
-    required Color iconColor,
-    required String title,
-    required String subtitle,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: const Color(0xFF0F172A),
-          border: Border.all(color: const Color(0xFF1E293B)),
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                color: iconColor.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Icon(icon, color: iconColor, size: 18),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFFE2E8F0),
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: const TextStyle(
-                      fontSize: 9,
-                      color: Color(0xFF94A3B8),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const Icon(
-              Icons.arrow_forward_ios,
-              size: 10,
-              color: Color(0xFF475569),
-            ),
-          ],
-        ),
+        ],
       ),
     );
   }
-}
-
-class GridPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    var paint = Paint()
-      ..color = const Color(0xFF1E293B)
-      ..strokeWidth = 1;
-    for (double i = 0; i < size.width; i += 20) {
-      canvas.drawLine(Offset(i, 0), Offset(i, size.height), paint);
-    }
-    for (double i = 0; i < size.height; i += 20) {
-      canvas.drawLine(Offset(0, i), Offset(size.width, i), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

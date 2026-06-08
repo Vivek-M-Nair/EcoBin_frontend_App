@@ -3,10 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'login_page.dart';
 import 'main.dart';
+import 'payment_page.dart';
 
-//removal code from here
-// Add this temporarily to the bottom of lib/collection_worker.dart
-
+// --- DEVELOPMENT ISOLATED RUNTIME BADGE ---
 void main() => runApp(const TestWorkerApp());
 
 class TestWorkerApp extends StatelessWidget {
@@ -17,22 +16,19 @@ class TestWorkerApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(),
-      home: const EcoBinCollectionWorkerPage(), // Your actual page
+      home: const CollectionWorkerPage(),
     );
   }
 }
-//removal code till here
 
-class EcoBinCollectionWorkerPage extends StatefulWidget {
-  const EcoBinCollectionWorkerPage({super.key});
+class CollectionWorkerPage extends StatefulWidget {
+  const CollectionWorkerPage({super.key});
 
   @override
-  State<EcoBinCollectionWorkerPage> createState() =>
-      _EcoBinCollectionWorkerPageState();
+  State<CollectionWorkerPage> createState() => _CollectionWorkerPageState();
 }
 
-class _EcoBinCollectionWorkerPageState
-    extends State<EcoBinCollectionWorkerPage> {
+class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
   // --- PRODUCTION DEVELOPMENT MODE ROUTER SWITCH ---
   final bool useMockBackend = true;
 
@@ -40,11 +36,11 @@ class _EcoBinCollectionWorkerPageState
   final String _assignedWardName = "Ward 14 (Gandhi Nagar)";
   final int _assignedTotalHouseCount = 48;
   String _selectedPaymentVectorOption = "Pay as cash in office counter";
-  bool _showCollectionUpdate = false; // Hidden by default
-  int _workerRating = 0; // Interactive feedback state
+  bool _showCollectionUpdate = false;
+  int _workerRating = 0;
 
   // Mock Notifications loaded dynamically
-  List<String> _notifications = [
+  final List<String> _notifications = [
     "🚨 ALERT: Route deviation detected near Ward 14.",
     "🌿 INFO: Garbage truck scheduled for maintenance tomorrow morning.",
     "⚠️ WARNING: High wind warnings are currently active for the sector.",
@@ -111,7 +107,7 @@ class _EcoBinCollectionWorkerPageState
       return;
     }
     try {
-      final url = Uri.parse('http://10.0.2.2:8080/api/worker/delete-account');
+      final url = Uri.parse('http://10.0.2.2:8081/api/worker/delete-account');
       await http.delete(url);
     } catch (_) {}
   }
@@ -124,7 +120,7 @@ class _EcoBinCollectionWorkerPageState
     }
     try {
       final url = Uri.parse(
-        'http://10.0.2.2:8080/api/worker/clear-notifications',
+        'http://10.0.2.2:8081/api/worker/clear-notifications',
       );
       await http.post(url);
     } catch (_) {}
@@ -137,7 +133,7 @@ class _EcoBinCollectionWorkerPageState
       return;
     }
     try {
-      final url = Uri.parse('http://10.0.2.2:8080/api/worker/apply-leave');
+      final url = Uri.parse('http://10.0.2.2:8081/api/worker/apply-leave');
       await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
@@ -162,7 +158,7 @@ class _EcoBinCollectionWorkerPageState
     }
     try {
       final url = Uri.parse(
-        'http://10.0.2.2:8080/api/worker/update-collect-status',
+        'http://10.0.2.2:8081/api/worker/update-collect-status',
       );
       await http.post(
         url,
@@ -193,7 +189,7 @@ class _EcoBinCollectionWorkerPageState
     } else {
       try {
         final url = Uri.parse(
-          'http://10.0.2.2:8080/api/worker/submit-route-report',
+          'http://10.0.2.2:8081/api/worker/submit-route-report',
         );
         await http.post(
           url,
@@ -286,8 +282,6 @@ class _EcoBinCollectionWorkerPageState
                   ),
                   const Divider(color: Color(0xFF1E293B)),
                   const SizedBox(height: 12),
-
-                  // --- NOTIFICATIONS OPTION ---
                   ListTile(
                     leading: const Icon(
                       Icons.notifications_active_outlined,
@@ -312,8 +306,6 @@ class _EcoBinCollectionWorkerPageState
                       _showNotificationsDialog(context, setPanelState);
                     },
                   ),
-
-                  // --- DELETE ACCOUNT OPTION ---
                   ListTile(
                     leading: const Icon(
                       Icons.delete_forever_outlined,
@@ -335,8 +327,6 @@ class _EcoBinCollectionWorkerPageState
                       _showDeleteAccountWarning(context);
                     },
                   ),
-
-                  // --- LOGOUT OPTION ---
                   ListTile(
                     leading: const Icon(
                       Icons.power_settings_new_rounded,
@@ -351,11 +341,12 @@ class _EcoBinCollectionWorkerPageState
                       ),
                     ),
                     onTap: () {
-                      Navigator.pop(context); // Close sheet
+                      Navigator.pop(context);
                       Navigator.of(context).pushReplacement(
                         MaterialPageRoute(
-                          builder: (context) => const EcoBinLoginPage(
-                            dashboardScreen: EcoBinHomePage(),
+                          builder: (context) => EcoBinLoginPage(
+                            userDashboardScreen: EcoBinHomePage(),
+                            workerDashboardScreen: CollectionWorkerPage(),
                           ),
                         ),
                       );
@@ -379,12 +370,7 @@ class _EcoBinCollectionWorkerPageState
       context: parentContext,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) {
-          return AlertDialog(
-            backgroundColor: const Color(0xFF0F172A),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(24),
-              side: const BorderSide(color: Color(0xFF1E293B)),
-            ),
+          return AppCustomAlertDialog(
             title: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -476,12 +462,7 @@ class _EcoBinCollectionWorkerPageState
   void _showDeleteAccountWarning(BuildContext parentContext) {
     showDialog(
       context: parentContext,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF0F172A),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(24),
-          side: const BorderSide(color: Color(0xFF1E293B)),
-        ),
+      builder: (context) => AppCustomAlertDialog(
         title: const Text(
           "Delete Account permanently?",
           style: TextStyle(
@@ -507,8 +488,8 @@ class _EcoBinCollectionWorkerPageState
               backgroundColor: const Color(0xFFF43F5E),
             ),
             onPressed: () async {
-              Navigator.pop(context); // Close confirm
-              Navigator.pop(parentContext); // Close panel
+              Navigator.pop(context);
+              Navigator.pop(parentContext);
               await _deleteAccountBackendCall();
               _showSecureDeletionResponseDialog();
             },
@@ -528,12 +509,7 @@ class _EcoBinCollectionWorkerPageState
   void _showSecureDeletionResponseDialog() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF0F172A),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(24),
-          side: const BorderSide(color: Color(0xFF1E293B)),
-        ),
+      builder: (context) => AppCustomAlertDialog(
         title: const Text(
           "Request Submitted",
           style: TextStyle(
@@ -554,11 +530,12 @@ class _EcoBinCollectionWorkerPageState
             ),
             onPressed: () {
               Navigator.pop(context);
-              // Cleanly boot user out of system
               Navigator.of(context).pushReplacement(
                 MaterialPageRoute(
-                  builder: (context) =>
-                      const EcoBinLoginPage(dashboardScreen: EcoBinHomePage()),
+                  builder: (context) => EcoBinLoginPage(
+                    userDashboardScreen: EcoBinHomePage(),
+                    workerDashboardScreen: CollectionWorkerPage(),
+                  ),
                 ),
               );
             },
@@ -572,7 +549,6 @@ class _EcoBinCollectionWorkerPageState
     );
   }
 
-  /// Displays today's assigned area coordinates & landmark together with history
   void _showTodayScheduleDialog() {
     final List<Map<String, String>> previousSectors = [
       {'day': '1 Day Ago', 'area': 'Ward 12 (Subhash Nagar)'},
@@ -586,12 +562,7 @@ class _EcoBinCollectionWorkerPageState
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF0F172A),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(24),
-          side: const BorderSide(color: Color(0xFF1E293B)),
-        ),
+      builder: (context) => AppCustomAlertDialog(
         title: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
@@ -626,7 +597,6 @@ class _EcoBinCollectionWorkerPageState
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Today's Assignment metadata
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
@@ -686,7 +656,7 @@ class _EcoBinCollectionWorkerPageState
                       ),
                       const SizedBox(height: 8),
                       const Text(
-                        "🛣️ ADDRESS OF AREA",
+                        "Fully Addressed",
                         style: TextStyle(
                           fontSize: 8,
                           fontWeight: FontWeight.bold,
@@ -772,7 +742,6 @@ class _EcoBinCollectionWorkerPageState
     );
   }
 
-  /// Displays the interactive Apply Leave Modal Overlay Dialog
   void _showApplyLeaveModal() {
     _leaveDateController.clear();
     _leaveReasonController.clear();
@@ -780,12 +749,7 @@ class _EcoBinCollectionWorkerPageState
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF0F172A),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(24),
-          side: const BorderSide(color: Color(0xFF1E293B)),
-        ),
+      builder: (context) => AppCustomAlertDialog(
         title: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
@@ -971,7 +935,6 @@ class _EcoBinCollectionWorkerPageState
     );
   }
 
-  /// Evaluates OTP collection parameter changes
   void _openHouseProcessingOverlay(int index) {
     final house = _houseManifestList[index];
     final TextEditingController otpInputController = TextEditingController();
@@ -982,12 +945,7 @@ class _EcoBinCollectionWorkerPageState
       barrierDismissible: false,
       builder: (context) => StatefulBuilder(
         builder: (context, setModalState) {
-          return AlertDialog(
-            backgroundColor: const Color(0xFF0F172A),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(24),
-              side: const BorderSide(color: Color(0xFF1E293B)),
-            ),
+          return AppCustomAlertDialog(
             title: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -1158,7 +1116,8 @@ class _EcoBinCollectionWorkerPageState
                     fontWeight: FontWeight.bold,
                   ),
                 ),
-              ),
+              ), // Correctly closed TextButton
+
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF10B981),
@@ -1167,40 +1126,48 @@ class _EcoBinCollectionWorkerPageState
                     borderRadius: BorderRadius.circular(10),
                   ),
                 ),
-                onPressed: !cashCollectedInternalFlag
-                    ? null
-                    : () async {
-                        if (otpInputController.text.trim().isEmpty) return;
-                        Navigator.pop(context);
-                        setState(() {
-                          _houseManifestList[index]['collectStatus'] =
-                              "Collected";
-                          _houseManifestList[index]['paymentStatus'] = "Paid";
-                        });
-                        await _syncCollectionStatusToBackend(
-                          house['houseNo'],
-                          "Collected",
-                        );
-                      },
+                onPressed: () async {
+                  Navigator.pop(context); // Close the dialog gate
+
+                  final double fee = (house['feeAmount'] as num).toDouble();
+
+                  // Direct the worker to process the transaction on the payment page
+                  final bool? result = await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => PaymentPage(amountToPay: fee),
+                    ),
+                  );
+
+                  if (result == true) {
+                    setState(() {
+                      _houseManifestList[index]['collectStatus'] = "Collected";
+                      _houseManifestList[index]['paymentStatus'] = "Paid";
+                    });
+                    await _syncCollectionStatusToBackend(
+                      house['houseNo'],
+                      "Collected",
+                    );
+                  }
+                },
                 child: const Text(
                   "Confirm Lift",
                   style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
+                ), // Added the missing child property back here safely
+              ), // Closed ElevatedButton
+            ], // Closed actions array
+          ); // Closed AppCustomAlertDialog
+        }, // Closed StatefulBuilder builder function
+      ), // Closed StatefulBuilder widget
+    ); // Closed showDialog wrapper execution block
+  } // Closed _openHouseProcessingOverlay method block
 
   void _handleSkippedLiftAction(int index) {
     Navigator.pop(context);
     final TextEditingController reasonController = TextEditingController();
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF0F172A),
+      builder: (context) => AppCustomAlertDialog(
         title: const Text(
           "Log Collection Exception",
           style: TextStyle(
@@ -1260,9 +1227,7 @@ class _EcoBinCollectionWorkerPageState
       body: SafeArea(
         child: Column(
           children: [
-            // Header Bar
             _buildAppHeaderRow(),
-
             Expanded(
               child: SingleChildScrollView(
                 physics: const ClampingScrollPhysics(),
@@ -1273,11 +1238,8 @@ class _EcoBinCollectionWorkerPageState
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Dynamic Deployment Card Node (Route Code cleanly removed)
                     _buildActiveDeploymentCard(),
                     const SizedBox(height: 20),
-
-                    // Quick Nav Module Operations Buttons
                     const Text(
                       'FIELD OPERATION MODULES',
                       style: TextStyle(
@@ -1290,8 +1252,6 @@ class _EcoBinCollectionWorkerPageState
                     const SizedBox(height: 10),
                     _buildOperationNavigationRow(),
                     const SizedBox(height: 24),
-
-                    // Dynamic Collection View Manifest (Hides/Shows on Operation Click)
                     if (_showCollectionUpdate) ...[
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1319,16 +1279,10 @@ class _EcoBinCollectionWorkerPageState
                       _buildManifestListViewBlock(),
                       const SizedBox(height: 24),
                     ],
-
-                    // Submission Form Core Reports and Expenses
                     _buildRemittanceReportingSection(),
                     const SizedBox(height: 24),
-
-                    // Incidents Logger Section
                     _buildIncidentLoggerSection(),
                     const SizedBox(height: 24),
-
-                    // Interactive Performance Feedback Section
                     _buildFeedbackEvaluationSection(),
                     const SizedBox(height: 24),
                   ],
@@ -1678,7 +1632,6 @@ class _EcoBinCollectionWorkerPageState
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // --- PROCESS LIFT OPTION ---
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: house['paymentStatus'] == 'Paid'
@@ -1705,7 +1658,6 @@ class _EcoBinCollectionWorkerPageState
                       ),
                     ),
                     const SizedBox(width: 6),
-                    // --- NOT COLLECTING EXCEPTION OPTION ---
                     OutlinedButton(
                       style: OutlinedButton.styleFrom(
                         foregroundColor: const Color(0xFFF43F5E),
@@ -2065,8 +2017,6 @@ class _EcoBinCollectionWorkerPageState
             ),
           ),
           const SizedBox(height: 12),
-
-          // --- COMPLAINT IMAGE UPLOAD ---
           InkWell(
             onTap: () {
               ScaffoldMessenger.of(context).showSnackBar(
@@ -2108,7 +2058,6 @@ class _EcoBinCollectionWorkerPageState
             ),
           ),
           const SizedBox(height: 14),
-
           SizedBox(
             width: double.infinity,
             child: OutlinedButton(
@@ -2142,7 +2091,6 @@ class _EcoBinCollectionWorkerPageState
     );
   }
 
-  /// Interactive Feedback Section
   Widget _buildFeedbackEvaluationSection() {
     return Container(
       width: double.infinity,
@@ -2234,7 +2182,6 @@ class _EcoBinCollectionWorkerPageState
     );
   }
 
-  /// Composes a premium dark bottom navigation controller with Leave options included
   Widget _buildBottomNavigationBarWidget() {
     return Container(
       decoration: const BoxDecoration(
@@ -2249,20 +2196,20 @@ class _EcoBinCollectionWorkerPageState
         selectedFontSize: 9,
         unselectedFontSize: 9,
         selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold),
-        items: [
-          const BottomNavigationBarItem(
+        items: const [
+          BottomNavigationBarItem(
             icon: Icon(Icons.airport_shuttle_rounded),
             label: 'Route',
           ),
-          const BottomNavigationBarItem(
+          BottomNavigationBarItem(
             icon: Icon(Icons.receipt_long_rounded),
             label: 'Expenses',
           ),
-          const BottomNavigationBarItem(
+          BottomNavigationBarItem(
             icon: Icon(Icons.edit_calendar_rounded, color: Color(0xFFFBBF24)),
             label: 'Apply Leave',
           ),
-          const BottomNavigationBarItem(
+          BottomNavigationBarItem(
             icon: Icon(Icons.power_settings_new_rounded),
             label: 'Logout',
           ),
@@ -2284,13 +2231,42 @@ class _EcoBinCollectionWorkerPageState
           if (index == 3) {
             Navigator.of(context).pushReplacement(
               MaterialPageRoute(
-                builder: (context) =>
-                    const EcoBinLoginPage(dashboardScreen: EcoBinHomePage()),
+                builder: (context) => EcoBinLoginPage(
+                  userDashboardScreen: EcoBinHomePage(),
+                  workerDashboardScreen: CollectionWorkerPage(),
+                ),
               ),
             );
           }
         },
       ),
+    );
+  }
+}
+
+class AppCustomAlertDialog extends StatelessWidget {
+  final Widget title;
+  final Widget content;
+  final List<Widget>? actions;
+
+  const AppCustomAlertDialog({
+    super.key,
+    required this.title,
+    required this.content,
+    this.actions,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: const Color(0xFF0F172A),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(24),
+        side: const BorderSide(color: Color(0xFF1E293B)),
+      ),
+      title: title,
+      content: content,
+      actions: actions,
     );
   }
 }

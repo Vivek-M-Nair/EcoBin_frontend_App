@@ -14,8 +14,8 @@ class EcoBinRegisterPage extends StatefulWidget {
 
 class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
   // --- DEVELOPMENT MOCK MODE FLAG ---
-  // Flip this to false once your Spring Boot backend endpoints are active and ready!
-  final bool useMockBackend = true;
+  // Set this to false to test live requests with your local Spring Boot server!
+  final bool useMockBackend = false;
 
   final _step1FormKey = GlobalKey<FormState>();
   final _step2FormKey = GlobalKey<FormState>();
@@ -25,7 +25,7 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
   String _selectedDistrict = 'Kottayam';
   String _selectedRegionSystem = 'Village'; // Can be [Village, Municipality]
 
-  // Phase 1 Controllers (Dynamic UI changes based on property type)
+  // Phase 1 Controllers
   final TextEditingController _propertyNameController = TextEditingController();
   final TextEditingController _propertyOwnerController =
       TextEditingController();
@@ -36,7 +36,8 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
   final TextEditingController _wardNumberController = TextEditingController();
 
   // Phase 2 Controllers (Shown after property verification is successful)
-  String _generatedBackendUserId = '';
+  String _generatedBackendUserId =
+      ''; // Holds the 'houseId' returned by backend
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
@@ -58,7 +59,7 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
     'Kozhikode',
   ];
 
-  /// Step 1 Handshake: Verifies property details with Spring Boot or local mock system
+  /// Step 1 Handshake: Verifies property details with Spring Boot User Verification Endpoint
   Future<void> _verifyPropertyWithBackend() async {
     if (!_step1FormKey.currentState!.validate()) return;
 
@@ -67,52 +68,65 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
     });
 
     if (useMockBackend) {
-      // Simulate network request delay
       await Future.delayed(const Duration(milliseconds: 1400));
       setState(() {
-        // Generate a mock unique User ID using the property type code and a random digit seed
-        _generatedBackendUserId =
-            "EB-${_selectedType.substring(0, 3).toUpperCase()}-${1000 + (StackTrace.current.hashCode % 9000)}";
+        _generatedBackendUserId = "house-${UUID_LIKE_MOCK()}";
         _isStepVerified = true;
         _isLoading = false;
       });
-    } else {
+    }
+    {
       try {
+        // Updated URL path to match your Spring Boot Controller mapping
         final url = Uri.parse(
-          'http://10.0.2.2:8080/api/municipal/verify-property',
+          'http://10.181.174.87:8081/api/register/user/verify',
         );
         final response = await http.post(
           url,
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode({
-            'type': _selectedType,
-            'district': _selectedDistrict,
-            'propertyName': _propertyNameController.text.trim(),
+            'districtName': _selectedDistrict,
+            'houseName': _propertyNameController.text.trim(),
             'ownerName': _propertyOwnerController.text.trim(),
-            'propertyNumber': _propertyNumberController.text.trim(),
-            'subNumber': _subNumberController.text.trim(),
-            'regionSystem': _selectedRegionSystem,
-            'regionName': _regionNameController.text.trim(),
-            'wardNo': _wardNumberController.text.trim(),
+            'houseNumber': _propertyNumberController.text.trim(),
+            'subNo': _subNumberController.text.trim(),
+            'localBodyName': _regionNameController.text.trim(),
+            'wardNo': int.tryParse(_wardNumberController.text.trim()) ?? 0,
           }),
         );
 
         if (response.statusCode == 200) {
-          final data = jsonDecode(response.body);
-          setState(() {
-            _generatedBackendUserId = data['userId'] ?? 'EB-GEN-9901';
-            _isStepVerified = true;
-          });
+          final responseBody = response.body.trim();
+
+          // Intercept custom string validation warnings from backend
+          if (responseBody.contains("House not found")) {
+            _showErrorAlert(
+              "Property Not Found",
+              "House not found. Please register your house with the Government!",
+            );
+          } else if (responseBody == "account already exist") {
+            _showErrorAlert(
+              "Account Exists",
+              "An active account is already fully registered for this house profile.",
+            );
+          } else {
+            // Success payload delivers a map containing {"houseId": "..."}
+            final data = jsonDecode(responseBody);
+            setState(() {
+              _generatedBackendUserId = data['houseId'] ?? '';
+              _isStepVerified = true;
+            });
+          }
         } else {
           _showErrorAlert(
-            "Property Not Found",
-            "This ${_selectedType.toLowerCase()} is not registered in the selected $_selectedRegionSystem database, or an active account is already linked to it.",
+            "Server Error",
+            "Server responded with code: ${response.statusCode}. Please try again later.",
           );
         }
       } catch (e) {
         _showErrorAlert(
           "System Offline",
-          "Failed to communicate with municipal database. Verify your Spring Boot backend server is active.",
+          "Failed to communicate with EcoBin database. Verify your Spring Boot server application is running.",
         );
       } finally {
         setState(() {
@@ -122,7 +136,7 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
     }
   }
 
-  /// Step 2 Handshake: Submits the final user credentials to create the secure user account
+  /// Step 2 Handshake: Submits the final user credentials to complete registration
   Future<void> _submitFinalRegistration() async {
     if (!_step2FormKey.currentState!.validate()) return;
 
@@ -135,26 +149,34 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
       _executeRedirectToLogin();
     } else {
       try {
+        // Updated URL path to match user completion endpoint
+        // Under _submitFinalRegistration()
         final url = Uri.parse(
-          'http://10.0.2.2:8080/api/municipal/register-account',
+          'http://10.181.174.87:8081/api/register/user/complete',
         );
+
         final response = await http.post(
           url,
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode({
-            'userId': _generatedBackendUserId,
-            'phoneNumber': _phoneController.text.trim(),
-            'email': _emailController.text.trim(),
+            'houseId': _generatedBackendUserId,
             'password': _passwordController.text,
+            'phoneNumber': _phoneController.text.trim(),
+            'emailId': _emailController.text.trim(),
           }),
         );
 
-        if (response.statusCode == 201 || response.statusCode == 200) {
+        if (response.statusCode == 200) {
           _executeRedirectToLogin();
+        } else if (response.statusCode == 404) {
+          _showErrorAlert(
+            "Session Expired",
+            "The verified temporary House ID was not located on the server database. Please retry step 1.",
+          );
         } else {
           _showErrorAlert(
             "Registration Failed",
-            "Server rejected database registration. Double check your input details.",
+            "Server rejected database registration. Code: ${response.statusCode}",
           );
         }
       } catch (_) {
@@ -170,11 +192,17 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
     }
   }
 
+  String UUID_LIKE_MOCK() {
+    return (10000000 + (StackTrace.current.hashCode % 90000000))
+        .toString()
+        .substring(0, 8);
+  }
+
   void _executeRedirectToLogin() {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          "✨ Account $_generatedBackendUserId successfully registered! Routing to login screen...",
+          "✨ House Registration Complete! Routing to login screen...",
         ),
         backgroundColor: const Color(0xFF10B981),
         behavior: SnackBarBehavior.floating,
@@ -250,9 +278,7 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(
-        0xFF020617,
-      ), // Deep Dark Slate background matching theme
+      backgroundColor: const Color(0xFF020617),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -290,7 +316,7 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
             child: Column(
               children: [
                 if (!_isStepVerified) ...[
-                  // ==================== STEP 1: MUNICIPAL RECORD VERIFICATION ====================
+                  // ==================== STEP 1: RECORD VERIFICATION ====================
                   Form(
                     key: _step1FormKey,
                     child: Column(
@@ -450,7 +476,7 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
                     ),
                   ),
                 ] else ...[
-                  // ==================== STEP 2: ACCOUNT REGISTRATION ====================
+                  // ==================== STEP 2: ACCOUNT CREATION ====================
                   Form(
                     key: _step2FormKey,
                     child: Column(
@@ -497,7 +523,7 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              _buildFieldLabel("Generated User ID"),
+                              _buildFieldLabel("Assigned House tracking ID"),
                               Container(
                                 width: double.infinity,
                                 padding: const EdgeInsets.symmetric(
@@ -522,7 +548,7 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
                                 ),
                               ),
                               const SizedBox(height: 16),
-                              _buildFieldLabel("Phone Number (Aadhaar Linked)"),
+                              _buildFieldLabel("Phone Number"),
                               _buildTextFormField(
                                 _phoneController,
                                 "9876543210",
@@ -689,8 +715,9 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
       keyboardType: isNumeric ? TextInputType.number : TextInputType.text,
       style: const TextStyle(fontSize: 13, color: Colors.white),
       validator: (value) {
-        if (isRequired && (value == null || value.trim().isEmpty))
+        if (isRequired && (value == null || value.trim().isEmpty)) {
           return 'Field required';
+        }
         return null;
       },
       decoration: InputDecoration(

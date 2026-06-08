@@ -3,12 +3,18 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'register_page.dart';
+import 'main.dart'; // Allows dynamic construction of EcoBinHomePage
 
 class EcoBinLoginPage extends StatefulWidget {
-  /// The destination route to direct the user upon successful login validation
-  final Widget dashboardScreen;
+  /// Dynamic dashboard destination callbacks based on evaluated backend roles
+  final Widget userDashboardScreen;
+  final Widget workerDashboardScreen;
 
-  const EcoBinLoginPage({super.key, required this.dashboardScreen});
+  const EcoBinLoginPage({
+    super.key,
+    required this.userDashboardScreen,
+    required this.workerDashboardScreen,
+  });
 
   @override
   State<EcoBinLoginPage> createState() => _EcoBinLoginPageState();
@@ -23,19 +29,12 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
   bool _isLoading = false;
   bool _isCachedUser = false;
 
-  // =========================================================================
-  // --- FRONTEND DEVELOPER DEV-SWITCHER ---
-  // =========================================================================
-  // Since you haven't built your Spring Boot backend yet, keep this set to 'true'.
-  // It will bypass the server, simulate a network request delay, and let you
-  // test your user-id caching and app flows instantly!
-  //
-  // Switch to 'false' later to test your real Spring Boot REST API calls.
-  static const bool useMockBackend = true;
+  // --- DEVELOPMENT SWITCHER ---
+  // Flip this to false to send requests directly to your live Spring Boot backend!
+  static const bool useMockBackend = false;
 
-  // Note: '10.0.2.2' is the special IP redirect address that points directly to your computer's
-  // 'localhost' from inside an Android emulator (like MuMu Player or Android Studio Emulator).
-  final String _backendUrl = 'http://10.0.2.2:8080/api/auth/login';
+  // Core backend URL updated to target your 8081 runtime instance port
+  final String _backendUrl = 'http://10.181.174.87:8081/api/login';
 
   @override
   void initState() {
@@ -43,7 +42,7 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
     _loadCachedUserId();
   }
 
-  /// Fetches saved user profile configuration credentials from persistent hardware storage cache
+  /// Fetches saved user profile configuration credentials from storage cache
   Future<void> _loadCachedUserId() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -54,187 +53,117 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
           _isCachedUser = true;
         });
       }
-    } catch (_) {
-      // Resilient local runtime variable fallback if plugins are unconfigured
-    }
+    } catch (_) {}
   }
 
-  /// Saves the active authenticated ID securely in persistent cache memory
-  Future<void> _saveUserIdToCache(String userId) async {
+  /// Saves the active authenticated ID and profile payload metrics into local cache memory
+  Future<void> _saveSessionToCache(
+    String userId,
+    Map<String, dynamic> serverData,
+  ) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('cached_user_id', userId);
-    } catch (_) {
-      // Fail-safe protection mapping
-    }
+      await prefs.setString('auth_user_session', jsonEncode(serverData));
+    } catch (_) {}
   }
 
   /// Submits credentials to your Spring Boot REST Endpoint or mocks the call
   void _executeLogin() async {
-    if (_formKey.currentState!.validate()) {
-      setState(() {
-        _isLoading = true;
-      });
+    if (!_formKey.currentState!.validate()) return;
 
-      final String userId = _userIdController.text.trim();
-      final String password = _passwordController.text;
+    setState(() {
+      _isLoading = true;
+    });
 
-      if (useMockBackend) {
-        // --- 🧪 DEV MOCK BACKEND MODE ---
-        // Simulate a realistic database search handshake delay
-        await Future.delayed(const Duration(milliseconds: 1200));
-        await _saveUserIdToCache(userId);
-        _navigateToDashboard(userId);
-      } else {
-        // --- 🔌 SPRING BOOT BACKEND REST CALL ---
-        try {
-          // Send verification request to Spring Boot Auth Controller
-          final response = await http
-              .post(
-                Uri.parse(_backendUrl),
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Accept': 'application/json',
-                },
-                body: jsonEncode({'userId': userId, 'password': password}),
-              )
-              .timeout(
-                const Duration(seconds: 10),
-              ); // Set a robust timeout threshold
+    final String userId = _userIdController.text.trim();
+    final String password = _passwordController.text;
 
-          if (response.statusCode == 200 || response.statusCode == 201) {
-            // Success pathway: User verified in Spring Boot database
-            await _saveUserIdToCache(userId);
-            _navigateToDashboard(userId);
-          } else {
-            // Failure pathway: Credentials rejected by Spring Boot
-            if (mounted) {
-              setState(() {
-                _isLoading = false;
-              });
-              _showErrorDialog(
-                title: "Verification Failed",
-                message:
-                    "The entered User ID or Password was incorrect. Please check your credentials or register a new profile.",
-              );
-            }
-          }
-        } catch (e) {
-          // Exception pathway: Server unreachable or offline
-          if (mounted) {
-            setState(() {
-              _isLoading = false;
-            });
-            _showErrorDialog(
-              title: "Connection Timed Out",
-              message:
-                  "Unable to reach the backend services. Please ensure your Spring Boot application is running on port 8080, and the local endpoint path '/api/auth/login' exists.",
-            );
-          }
+    if (useMockBackend) {
+      await Future.delayed(const Duration(milliseconds: 1200));
+      final mockRolePage = userId.startsWith("CW-")
+          ? "collection_worker_page"
+          : "user_page";
+      final mockPayload = {"status": "success", "page": mockRolePage};
+
+      await _saveSessionToCache(userId, mockPayload);
+      _handleRoleRouting(mockRolePage, userId, mockPayload);
+    } else {
+      try {
+        final response = await http
+            .post(
+              Uri.parse(_backendUrl),
+              headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+              },
+              body: jsonEncode({
+                'userId': userId,
+                'password': password,
+                'passkey': '',
+              }),
+            )
+            .timeout(const Duration(seconds: 10));
+
+        if (response.statusCode == 200) {
+          final Map<String, dynamic> responseData = jsonDecode(response.body);
+          final String targetPage = responseData['page'] ?? '';
+
+          await _saveSessionToCache(userId, responseData);
+
+          // Passes the response data map down to route handling setup dynamically
+          _handleRoleRouting(targetPage, userId, responseData);
+        } else {
+          _handleLoginError(
+            "Verification Failed",
+            "The system ID or security password was invalid. Please double check.",
+          );
         }
+      } catch (e) {
+        _handleLoginError(
+          "Connection Failure",
+          "Unable to connect to EcoBin core services. Ensure your server is active on port 8081.",
+        );
       }
     }
   }
 
-  /// Coordinates the transition directly to Dashboard Home Page
-  void _navigateToDashboard(String userId) {
-    if (mounted) {
-      setState(() {
-        _isLoading = false;
-      });
+  /// Dynamically determines layout redirection paths based on system authorization rules
+  void _handleRoleRouting(
+    String targetPage,
+    String identityLabel,
+    Map<String, dynamic> responseData,
+  ) {
+    if (!mounted) return;
 
-      Navigator.of(context).pushReplacement(
-        PageRouteBuilder(
-          pageBuilder: (context, animation, secondaryAnimation) =>
-              widget.dashboardScreen,
-          transitionsBuilder: (context, animation, secondaryAnimation, child) {
-            return FadeTransition(opacity: animation, child: child);
-          },
-          transitionDuration: const Duration(milliseconds: 600),
-        ),
-      );
+    setState(() {
+      _isLoading = false;
+    });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              const Text('🌿 ', style: TextStyle(fontSize: 16)),
-              Expanded(
-                child: Text(
-                  "Welcome back, $userId!",
-                  style: const TextStyle(
-                    color: Color(0xFF020617),
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          backgroundColor: const Color(0xFF10B981),
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-        ),
+    Widget destinationWidget;
+    String welcomeMessage = "Welcome back, $identityLabel!";
+
+    if (targetPage == "user_page") {
+      // Inject response map details directly into our main homepage state tree
+      destinationWidget = EcoBinHomePage(loginData: responseData);
+      final String parsedName = responseData['userName'] ?? identityLabel;
+      welcomeMessage = "Welcome back, $parsedName! 🌿";
+    } else if (targetPage == "collection_worker_page") {
+      destinationWidget = widget.workerDashboardScreen;
+      welcomeMessage = "Field deployment initialized for $identityLabel!";
+    } else {
+      _showErrorDialog(
+        title: "Access Restricted",
+        message:
+            "Mobile device execution rules only permit logging in as a Resident or Collection Worker.",
       );
+      return;
     }
-  }
 
-  /// Displays a clean modal window outlining the specific error state
-  void _showErrorDialog({required String title, required String message}) {
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF0F172A), // Slate 900
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          title: Row(
-            children: [
-              const Icon(Icons.error_outline_rounded, color: Color(0xFFEF4444)),
-              const SizedBox(width: 8),
-              Text(
-                title,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-          content: Text(
-            message,
-            style: const TextStyle(
-              color: Color(0xFFCBD5E1),
-              fontSize: 13,
-              height: 1.4,
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text(
-                'Try Again',
-                style: TextStyle(
-                  color: Color(0xFF10B981),
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  /// Handles guest routing and bypasses cache requirements
-  void _executeGuestLogin() {
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
         pageBuilder: (context, animation, secondaryAnimation) =>
-            widget.dashboardScreen,
+            destinationWidget,
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return FadeTransition(opacity: animation, child: child);
         },
@@ -244,31 +173,42 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: const Text(
-          "Logged in as Guest Rider 👤",
-          style: TextStyle(
+        content: Text(
+          welcomeMessage,
+          style: const TextStyle(
             color: Color(0xFF020617),
             fontWeight: FontWeight.bold,
           ),
         ),
-        backgroundColor: const Color(0xFF64748B),
+        backgroundColor: const Color(0xFF10B981),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
     );
   }
 
-  @override
-  void dispose() {
-    _userIdController.dispose();
-    _passwordController.dispose();
-    super.dispose();
+  void _handleLoginError(String header, String info) {
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+      _showErrorDialog(title: header, message: info);
+    }
+  }
+
+  void _showErrorDialog({required String title, required String message}) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return CustomErrorDialog(title: title, message: message);
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF020617), // Slate 950 App Base
+      backgroundColor: const Color(0xFF020617),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -277,7 +217,6 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Top App Branding
                 Container(
                   width: 64,
                   height: 64,
@@ -322,17 +261,13 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
                   ),
                 ),
                 const SizedBox(height: 40),
-
-                // Core Login Panel
                 Form(
                   key: _formKey,
                   child: Container(
                     padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF0F172A), // Slate 900
-                      border: Border.all(
-                        color: const Color(0xFF1E293B),
-                      ), // Slate 800
+                      color: const Color(0xFF0F172A),
+                      border: Border.all(color: const Color(0xFF1E293B)),
                       borderRadius: BorderRadius.circular(28),
                     ),
                     child: Column(
@@ -355,10 +290,8 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
                           ),
                         ),
                         const SizedBox(height: 24),
-
-                        // USER ID FIELD
                         const Text(
-                          'USER ID',
+                          'USER ID / WORKER ID',
                           style: TextStyle(
                             fontSize: 9,
                             fontWeight: FontWeight.bold,
@@ -375,12 +308,12 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
                           ),
                           validator: (value) {
                             if (value == null || value.trim().isEmpty) {
-                              return 'User ID is required';
+                              return 'System Identification ID is required';
                             }
                             return null;
                           },
                           decoration: InputDecoration(
-                            hintText: 'e.g. AM-8902',
+                            hintText: 'e.g. house-bf21a004 or CW-1024',
                             hintStyle: const TextStyle(
                               color: Color(0xFF475569),
                             ),
@@ -450,8 +383,6 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
                           ),
                         ),
                         const SizedBox(height: 16),
-
-                        // PASSWORD FIELD
                         const Text(
                           'PASSWORD',
                           style: TextStyle(
@@ -528,8 +459,6 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
                           ),
                         ),
                         const SizedBox(height: 24),
-
-                        // SUBMIT BUTTON
                         SizedBox(
                           width: double.infinity,
                           child: ElevatedButton(
@@ -577,8 +506,6 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
                   ),
                 ),
                 const SizedBox(height: 24),
-
-                // Register Link Option
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -588,13 +515,10 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
                     ),
                     TextButton(
                       onPressed: () {
-                        // Smoothly transitions from the login screen over to your dynamic registration view
                         Navigator.of(context).push(
                           MaterialPageRoute(
-                            builder: (context) => EcoBinRegisterPage(
-                              loginPageScreen:
-                                  widget, // Passes the current login page instance as a fallback reference
-                            ),
+                            builder: (context) =>
+                                EcoBinRegisterPage(loginPageScreen: widget),
                           ),
                         );
                       },
@@ -609,55 +533,65 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
                     ),
                   ],
                 ),
-
-                const SizedBox(height: 8),
-                Row(
-                  children: const [
-                    Expanded(child: Divider(color: Color(0xFF1E293B))),
-                    Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 16.0),
-                      child: Text(
-                        'OR',
-                        style: TextStyle(
-                          fontSize: 9,
-                          fontWeight: FontWeight.w900,
-                          color: Color(0xFF475569),
-                        ),
-                      ),
-                    ),
-                    Expanded(child: Divider(color: Color(0xFF1E293B))),
-                  ],
-                ),
-                const SizedBox(height: 16),
-
-                // Guest Login Alternative Option
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: _executeGuestLogin,
-                    icon: const Icon(Icons.person_outline_rounded, size: 16),
-                    label: const Text(
-                      'Continue as Guest Rider',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFFE2E8F0),
-                      side: const BorderSide(color: Color(0xFF1E293B)),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                    ),
-                  ),
-                ),
               ],
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+// Fixed: Moved outside of the state class scope to resolve compilation errors
+class CustomErrorDialog extends StatelessWidget {
+  final String title;
+  final String message;
+
+  const CustomErrorDialog({
+    super.key,
+    required this.title,
+    required this.message,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: const Color(0xFF0F172A),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: Row(
+        children: [
+          const Icon(Icons.error_outline_rounded, color: Color(0xFFEF4444)),
+          const SizedBox(width: 8),
+          Text(
+            title,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+      content: Text(
+        message,
+        style: const TextStyle(
+          color: Color(0xFFCBD5E1),
+          fontSize: 13,
+          height: 1.4,
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text(
+            'Try Again',
+            style: TextStyle(
+              color: Color(0xFF10B981),
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

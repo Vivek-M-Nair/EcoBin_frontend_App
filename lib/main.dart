@@ -65,6 +65,8 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
   final TextEditingController _complaintTextController =
       TextEditingController();
   final TextEditingController _feedbackTextController = TextEditingController();
+  final TextEditingController _immediateRequestReasonController =
+      TextEditingController();
 
   @override
   void initState() {
@@ -117,7 +119,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
     );
     try {
       final url = Uri.parse(
-        'http://110.181.174.87:8081/api/collection/schedule/view/$_currentUserId',
+        'http://10.181.174.87:8081/api/collection/schedule/view/$_currentUserId',
       );
 
       final response = await http.get(url).timeout(const Duration(seconds: 10));
@@ -198,6 +200,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
   void dispose() {
     _complaintTextController.dispose();
     _feedbackTextController.dispose();
+    _immediateRequestReasonController.dispose();
     super.dispose();
   }
 
@@ -1362,13 +1365,30 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                       ),
                     );
                     if (result == true) {
-                      setState(() {
-                        _isPaymentDone = true;
-                        _ecoPoints += 50;
-                      });
-                      _showSnackBar(
-                        "💳 Payment recorded! Balance successfully settled.",
-                      );
+                      _showSnackBar("Processing payment settlement... 💳");
+                      try {
+                        final response = await http.post(
+                          Uri.parse('http://10.181.174.87:8081/api/payment/pay'),
+                          headers: {'Content-Type': 'application/json'},
+                          body: jsonEncode({
+                            'userId': _currentUserId,
+                            'amountPaid': _amountDue,
+                          }),
+                        );
+                        if (response.statusCode == 200) {
+                          setState(() {
+                            _isPaymentDone = true;
+                            _ecoPoints += 50;
+                          });
+                          _showSnackBar(
+                            "💳 Payment recorded! Balance successfully settled.",
+                          );
+                        } else {
+                          _showSnackBar("❌ Payment verification rejected by backend.");
+                        }
+                      } catch (e) {
+                        _showSnackBar("❌ Network connection failed. Try again.");
+                      }
                       _fetchLiveCollectionDashboard();
                     }
                   },
@@ -1560,6 +1580,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
             ),
             const SizedBox(height: 6),
             TextField(
+              controller: _immediateRequestReasonController,
               maxLines: 3,
               style: const TextStyle(fontSize: 12, color: Colors.white),
               decoration: InputDecoration(
@@ -1582,6 +1603,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
               width: double.infinity,
               child: ElevatedButton(
                 onPressed: () async {
+                  final String reasonStr = _immediateRequestReasonController.text.trim();
                   Navigator.pop(context);
                   final bool? result = await Navigator.push(
                     context,
@@ -1591,31 +1613,44 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                     ),
                   );
                   if (result == true) {
-                    _showSnackBar(
-                      "Processing instant cleanup placement log... ⏳",
-                    );
+                    _showSnackBar("Processing instant cleanup payment... 💳");
                     try {
-                      final url = Uri.parse(
-                        'http://10.181.174.87:8081/api/collection/immediate-request',
-                      );
-                      final response = await http.post(
-                        url,
+                      final payResponse = await http.post(
+                        Uri.parse('http://10.181.174.87:8081/api/payment/pay'),
                         headers: {'Content-Type': 'application/json'},
                         body: jsonEncode({
                           'userId': _currentUserId,
-                          'reason':
-                              'Instant user requested manual trigger placement context',
+                          'amountPaid': calculatedAmount,
                         }),
                       );
-                      if (response.statusCode == 200) {
-                        _showSnackBar(
-                          "🚀 Request committed! Cluster database synchronized successfully.",
+                      if (payResponse.statusCode == 200) {
+                        _showSnackBar("Filing immediate collection request... ⏳");
+                        final url = Uri.parse(
+                          'http://10.181.174.87:8081/api/collection/immediate-request',
                         );
-                        _fetchLiveCollectionDashboard();
+                        final response = await http.post(
+                          url,
+                          headers: {'Content-Type': 'application/json'},
+                          body: jsonEncode({
+                            'userId': _currentUserId,
+                            'reason': reasonStr.isNotEmpty ? reasonStr : 'Instant user requested collection',
+                          }),
+                        );
+                        if (response.statusCode == 200) {
+                          _showSnackBar(
+                            "🚀 Request committed! Cluster database synchronized successfully.",
+                          );
+                          _immediateRequestReasonController.clear();
+                          _fetchLiveCollectionDashboard();
+                        } else {
+                          _showSnackBar("❌ Request rejected by server controller.");
+                        }
+                      } else {
+                        _showSnackBar("❌ Payment failed during request processing.");
                       }
                     } catch (e) {
                       _showSnackBar(
-                        "⚠ Network write timeout, but payment logged successfully.",
+                        "⚠ Network error during request processing.",
                       );
                     }
                   }
@@ -1823,149 +1858,154 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
   }
 
   Widget _buildComplaintModalContent() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'ISSUE TYPE',
-          style: TextStyle(
-            fontSize: 9,
-            fontWeight: FontWeight.bold,
-            color: Color(0xFF94A3B8),
-          ),
-        ),
-        const SizedBox(height: 6),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1E293B),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: DropdownButton<String>(
-            value: 'Missed Collection / Late truck',
-            dropdownColor: const Color(0xFF1E293B),
-            isExpanded: true,
-            underline: const SizedBox(),
-            items:
-                <String>[
-                      'Missed Collection / Late truck',
-                      'Incorrect Bill Charged',
-                      'Broken / Missing EcoBin container',
-                      'Spillage or messy collection',
-                    ]
-                    .map(
-                      (String value) => DropdownMenuItem<String>(
-                        value: value,
-                        child: Text(
-                          value,
-                          style: const TextStyle(fontSize: 12),
-                        ),
-                      ),
-                    )
-                    .toList(),
-            onChanged: (_) {},
-          ),
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _complaintTextController,
-          maxLines: 3,
-          style: const TextStyle(fontSize: 12),
-          decoration: InputDecoration(
-            hintText: 'Describe what went wrong, time of event...',
-            hintStyle: const TextStyle(color: Color(0xFF475569)),
-            fillColor: const Color(0xFF020617),
-            filled: true,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFF334155)),
+    String selectedComplaintType = 'Missed Collection / Late truck';
+    return StatefulBuilder(
+      builder: (context, setModalState) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'ISSUE TYPE',
+              style: TextStyle(
+                fontSize: 9,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF94A3B8),
+              ),
             ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: const Color(0xFF020617),
-            border: Border.all(color: const Color(0xFF1E293B)),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Column(
-            children: const [
-              Text('📸', style: TextStyle(fontSize: 20)),
-              SizedBox(height: 4),
-              Text(
-                'Upload Damage Photo / Proof',
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFFE2E8F0),
-                ),
-              ),
-              Text(
-                'Tap to browse files',
-                style: TextStyle(fontSize: 8, color: Color(0xFF475569)),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton(
-            onPressed: () async {
-              if (_complaintTextController.text.trim().isEmpty) {
-                _showSnackBar("Please enter a description for your complaint.");
-                return;
-              }
-              Navigator.pop(context);
-              _showSnackBar("Submitting incident ticket... ⏳");
-              try {
-                final url = Uri.parse(
-                  'http://10.181.174.87:8081/api/complaint/submit',
-                );
-                final response = await http.post(
-                  url,
-                  headers: {'Content-Type': 'application/json'},
-                  body: jsonEncode({
-                    'complaintDescription': _complaintTextController.text
-                        .trim(),
-                    'image': '',
-                  }),
-                );
-                if (response.statusCode == 200) {
-                  final Map<String, dynamic> resData = jsonDecode(
-                    response.body,
-                  );
-                  _showSnackBar(
-                    "📋 Ticket logged successfully! ID: ${resData['complaintId']}",
-                  );
-                  _complaintTextController.clear();
-                } else {
-                  _showSnackBar("❌ Submission rejected by server controller.");
-                }
-              } catch (e) {
-                _showSnackBar(
-                  "❌ Connection Dropped: Check if backend server is online.",
-                );
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFF43F5E),
-              foregroundColor: const Color(0xFF020617),
-              shape: RoundedRectangleBorder(
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E293B),
                 borderRadius: BorderRadius.circular(12),
               ),
-              padding: const EdgeInsets.symmetric(vertical: 14),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: selectedComplaintType,
+                  dropdownColor: const Color(0xFF1E293B),
+                  isExpanded: true,
+                  items: <String>[
+                    'Missed Collection / Late truck',
+                    'Incorrect Bill Charged',
+                    'Broken / Missing EcoBin container',
+                    'Spillage or messy collection',
+                  ].map((String value) => DropdownMenuItem<String>(
+                    value: value,
+                    child: Text(
+                      value,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  )).toList(),
+                  onChanged: (val) {
+                    setModalState(() {
+                      selectedComplaintType = val ?? 'Missed Collection / Late truck';
+                    });
+                  },
+                ),
+              ),
             ),
-            child: const Text(
-              'Submit Report Incident',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _complaintTextController,
+              maxLines: 3,
+              style: const TextStyle(fontSize: 12),
+              decoration: InputDecoration(
+                hintText: 'Describe what went wrong, time of event...',
+                hintStyle: const TextStyle(color: Color(0xFF475569)),
+                fillColor: const Color(0xFF020617),
+                filled: true,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Color(0xFF334155)),
+                ),
+              ),
             ),
-          ),
-        ),
-      ],
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF020617),
+                border: Border.all(color: const Color(0xFF1E293B)),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                children: const [
+                  Text('📸', style: TextStyle(fontSize: 20)),
+                  SizedBox(height: 4),
+                  Text(
+                    'Upload Damage Photo / Proof',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFFE2E8F0),
+                    ),
+                  ),
+                  Text(
+                    'Tap to browse files',
+                    style: TextStyle(fontSize: 8, color: Color(0xFF475569)),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () async {
+                  if (_complaintTextController.text.trim().isEmpty) {
+                    _showSnackBar("Please enter a description for your complaint.");
+                    return;
+                  }
+                  Navigator.pop(context);
+                  _showSnackBar("Submitting incident ticket... ⏳");
+                  try {
+                    final url = Uri.parse(
+                      'http://10.181.174.87:8081/api/complaint/submit',
+                    );
+                    final response = await http.post(
+                      url,
+                      headers: {'Content-Type': 'application/json'},
+                      body: jsonEncode({
+                        'userId': _currentUserId,
+                        'complaintDescription': '[$selectedComplaintType] ${_complaintTextController.text.trim()}',
+                        'image': '',
+                      }),
+                    );
+                    if (response.statusCode == 200) {
+                      final Map<String, dynamic> resData = jsonDecode(
+                        response.body,
+                      );
+                      _showSnackBar(
+                        "📋 Ticket logged successfully! ID: ${resData['complaintId'] ?? 'Registered'}",
+                      );
+                      _complaintTextController.clear();
+                    } else {
+                      _showSnackBar("❌ Submission rejected by server controller.");
+                    }
+                  } catch (e) {
+                    _showSnackBar(
+                      "❌ Connection Dropped: Check if backend server is online.",
+                    );
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFF43F5E),
+                  foregroundColor: const Color(0xFF020617),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                child: const Text(
+                  'Submit Report Incident',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -2080,7 +2120,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                 _showSnackBar("Processing structural data removal... ⏳");
                 try {
                   final url = Uri.parse(
-                    'http://10.181.174.87:8081/api/account/user/MEMBER_77',
+                    'http://10.181.174.87:8081/api/account/user/$_currentUserId',
                   );
                   final response = await http.delete(url);
                   if (response.statusCode == 200) {

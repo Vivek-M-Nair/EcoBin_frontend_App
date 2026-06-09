@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'register_page.dart';
 import 'main.dart'; // Allows dynamic construction of EcoBinHomePage
+import 'collection_worker.dart';
 
 class EcoBinLoginPage extends StatefulWidget {
   /// Dynamic dashboard destination callbacks based on evaluated backend roles
@@ -149,7 +150,7 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
       final String parsedName = responseData['userName'] ?? identityLabel;
       welcomeMessage = "Welcome back, $parsedName! 🌿";
     } else if (targetPage == "collection_worker_page") {
-      destinationWidget = widget.workerDashboardScreen;
+      destinationWidget = CollectionWorkerPage(loginData: responseData);
       welcomeMessage = "Field deployment initialized for $identityLabel!";
     } else {
       _showErrorDialog(

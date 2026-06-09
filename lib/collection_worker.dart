@@ -22,7 +22,8 @@ class TestWorkerApp extends StatelessWidget {
 }
 
 class CollectionWorkerPage extends StatefulWidget {
-  const CollectionWorkerPage({super.key});
+  final Map<String, dynamic> loginData;
+  const CollectionWorkerPage({super.key, this.loginData = const {}});
 
   @override
   State<CollectionWorkerPage> createState() => _CollectionWorkerPageState();
@@ -30,14 +31,17 @@ class CollectionWorkerPage extends StatefulWidget {
 
 class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
   // --- PRODUCTION DEVELOPMENT MODE ROUTER SWITCH ---
-  final bool useMockBackend = true;
+  final bool useMockBackend = false;
 
   // Tracked Operations Datastructure Manifest Model Variables
-  final String _assignedWardName = "Ward 14 (Gandhi Nagar)";
-  final int _assignedTotalHouseCount = 48;
+  String _assignedWardName = "Pending assignment";
+  int _assignedTotalHouseCount = 0;
   String _selectedPaymentVectorOption = "Pay as cash in office counter";
   bool _showCollectionUpdate = false;
   int _workerRating = 0;
+  bool _isLoading = true;
+  String _workerId = "";
+  String _workerName = "Dave R.";
 
   // Mock Notifications loaded dynamically
   final List<String> _notifications = [
@@ -78,7 +82,6 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
     },
   ];
 
-  // Submission Form Reporting Mapping Variables
   final TextEditingController _collectedCountController = TextEditingController(
     text: "46",
   );
@@ -91,14 +94,86 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
   final TextEditingController _pendingReasonController = TextEditingController(
     text: "Gate locked, dog inside properties",
   );
-  final TextEditingController _expenseAmountController =
-      TextEditingController();
-  final TextEditingController _incidentReportController =
-      TextEditingController();
-
-  // Apply Leave Text Controllers
+  final TextEditingController _expenseAmountController = TextEditingController();
+  final TextEditingController _incidentReportController = TextEditingController();
   final TextEditingController _leaveDateController = TextEditingController();
   final TextEditingController _leaveReasonController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _parseInjectedLoginData();
+    _fetchAssignedAreaDetails();
+  }
+
+  void _parseInjectedLoginData() {
+    if (widget.loginData.isNotEmpty) {
+      setState(() {
+        _workerId = widget.loginData['workerId'] ?? widget.loginData['userId'] ?? "";
+        _workerName = widget.loginData['workerName'] ?? widget.loginData['userName'] ?? "Dave R.";
+      });
+    }
+  }
+
+  String _capitalize(String s) {
+    if (s.isEmpty) return "Pending";
+    return s[0].toUpperCase() + s.substring(1).toLowerCase();
+  }
+
+  Future<void> _fetchAssignedAreaDetails() async {
+    if (_workerId.isEmpty) {
+      setState(() {
+        _isLoading = false;
+      });
+      return;
+    }
+    setState(() {
+      _isLoading = true;
+    });
+    try {
+      final url = Uri.parse('http://10.181.174.87:8081/api/worker/collection-area/$_workerId');
+      final response = await http.get(url).timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        if (data['status'] == 'success') {
+          final List<dynamic> houses = data['houses'] ?? [];
+          setState(() {
+            _assignedWardName = "Zone: ${data['zoneId'] ?? ''}";
+            _assignedTotalHouseCount = data['totalHouses'] ?? houses.length;
+            _houseManifestList.clear();
+            for (var h in houses) {
+              _houseManifestList.add({
+                'registeredUserId': h['registeredUserId'] ?? '',
+                'houseNo': h['houseNumber'] ?? '',
+                'wardNo': h['wardNumber'] ?? 0,
+                'owner': h['ownerName'] ?? '',
+                'paymentStatus': (h['paymentStatus'] as String).toLowerCase() == 'paid' ? 'Paid' : 'Pending',
+                'feeAmount': (h['amountPending'] as num?)?.toDouble() ?? 0.0,
+                'collectStatus': _capitalize(h['collectionStatus'] ?? 'Pending'),
+              });
+            }
+            _isLoading = false;
+          });
+          return;
+        }
+      }
+    } catch (e) {
+      debugPrint("Error fetching worker area: $e");
+    }
+    setState(() {
+      _isLoading = false;
+    });
+    _showSnackBar("⚠️ Failed to load assigned collection area from server.");
+  }
+
+  void _showSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
 
   /// Deletes user profile configurations securely across Spring Boot backend services
   Future<void> _deleteAccountBackendCall() async {
@@ -107,7 +182,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
       return;
     }
     try {
-      final url = Uri.parse('http://10.0.2.2:8081/api/worker/delete-account');
+      final url = Uri.parse('http://10.181.174.87:8081/api/worker/delete-account');
       await http.delete(url);
     } catch (_) {}
   }
@@ -120,7 +195,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
     }
     try {
       final url = Uri.parse(
-        'http://10.0.2.2:8081/api/worker/clear-notifications',
+        'http://10.181.174.87:8081/api/worker/clear-notifications',
       );
       await http.post(url);
     } catch (_) {}
@@ -133,7 +208,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
       return;
     }
     try {
-      final url = Uri.parse('http://10.0.2.2:8081/api/worker/apply-leave');
+      final url = Uri.parse('http://10.181.174.87:8081/api/worker/apply-leave');
       await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
@@ -158,7 +233,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
     }
     try {
       final url = Uri.parse(
-        'http://10.0.2.2:8081/api/worker/update-collect-status',
+        'http://10.181.174.87:8081/api/worker/update-collect-status',
       );
       await http.post(
         url,
@@ -189,7 +264,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
     } else {
       try {
         final url = Uri.parse(
-          'http://10.0.2.2:8081/api/worker/submit-route-report',
+          'http://10.181.174.87:8081/api/worker/submit-route-report',
         );
         await http.post(
           url,
@@ -938,7 +1013,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
   void _openHouseProcessingOverlay(int index) {
     final house = _houseManifestList[index];
     final TextEditingController otpInputController = TextEditingController();
-    bool cashCollectedInternalFlag = house['paymentStatus'] == 'Paid';
+    bool cashCollectedInternalFlag = false;
 
     showDialog(
       context: context,
@@ -981,7 +1056,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (!cashCollectedInternalFlag) ...[
+                  if (house['paymentStatus'] == 'Pending') ...[
                     Container(
                       padding: const EdgeInsets.all(12),
                       margin: const EdgeInsets.only(bottom: 16),
@@ -1004,43 +1079,36 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                             ),
                           ),
                           const SizedBox(height: 4),
-                          const Text(
-                            "Collect cash parameter updates from householder before validation processing.",
-                            style: TextStyle(
-                              color: Color(0xFF94A3B8),
-                              fontSize: 10,
-                              height: 1.3,
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          SizedBox(
-                            width: double.infinity,
-                            child: ElevatedButton(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFFF59E0B),
-                                foregroundColor: const Color(0xFF020617),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                              onPressed: () {
-                                setModalState(() {
-                                  cashCollectedInternalFlag = true;
-                                });
-                              },
-                              child: const Text(
-                                "Confirm Cash Received",
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                          CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text(
+                              "Payment Collected in Cash",
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
+                            subtitle: const Text(
+                              "Mark if cash is received at doorstep",
+                              style: TextStyle(
+                                color: Color(0xFF94A3B8),
+                                fontSize: 10,
+                              ),
+                            ),
+                            value: cashCollectedInternalFlag,
+                            activeColor: const Color(0xFF10B981),
+                            checkColor: const Color(0xFF020617),
+                            onChanged: (val) {
+                              setModalState(() {
+                                cashCollectedInternalFlag = val ?? false;
+                              });
+                            },
                           ),
                         ],
                       ),
                     ),
-                  ] else if (house['paymentStatus'] == 'Pending') ...[
+                  ] else ...[
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(10),
@@ -1050,7 +1118,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: const Text(
-                        "✓ Cash Collected Successfully",
+                        "✓ Fees Paid Online",
                         style: TextStyle(
                           color: Color(0xFF10B981),
                           fontSize: 11,
@@ -1075,7 +1143,6 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                   const SizedBox(height: 6),
                   TextField(
                     controller: otpInputController,
-                    enabled: cashCollectedInternalFlag,
                     keyboardType: TextInputType.number,
                     style: const TextStyle(
                       color: Color(0xFF10B981),
@@ -1116,8 +1183,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                     fontWeight: FontWeight.bold,
                   ),
                 ),
-              ), // Correctly closed TextButton
-
+              ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF10B981),
@@ -1127,40 +1193,59 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                   ),
                 ),
                 onPressed: () async {
-                  Navigator.pop(context); // Close the dialog gate
-
-                  final double fee = (house['feeAmount'] as num).toDouble();
-
-                  // Direct the worker to process the transaction on the payment page
-                  final bool? result = await Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => PaymentPage(amountToPay: fee),
-                    ),
-                  );
-
-                  if (result == true) {
-                    setState(() {
-                      _houseManifestList[index]['collectStatus'] = "Collected";
-                      _houseManifestList[index]['paymentStatus'] = "Paid";
-                    });
-                    await _syncCollectionStatusToBackend(
-                      house['houseNo'],
-                      "Collected",
+                  final otp = otpInputController.text.trim();
+                  if (otp.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("Please enter validation OTP.")),
                     );
+                    return;
+                  }
+                  Navigator.pop(context); // Close the dialog
+                  
+                  setState(() {
+                    _isLoading = true;
+                  });
+
+                  try {
+                    final response = await http.post(
+                      Uri.parse('http://10.181.174.87:8081/api/collection/verify-otp'),
+                      headers: {'Content-Type': 'application/json'},
+                      body: jsonEncode({
+                        'houseUserId': house['registeredUserId'] ?? '',
+                        'otp': otp,
+                        'paymentReceivedAtDoor': cashCollectedInternalFlag,
+                      }),
+                    );
+                    if (response.statusCode == 200) {
+                      final Map<String, dynamic> resData = jsonDecode(response.body);
+                      if (resData['status'] == 'success') {
+                        _showSnackBar("✓ Waste collection completed successfully!");
+                        await _fetchAssignedAreaDetails();
+                      } else {
+                        _showSnackBar("❌ Verification failed: ${resData['message'] ?? 'Invalid OTP'}");
+                      }
+                    } else {
+                      _showSnackBar("❌ Server verification failed (Status: ${response.statusCode})");
+                    }
+                  } catch (e) {
+                    _showSnackBar("❌ Network error verifying OTP. Please try again.");
+                  } finally {
+                    setState(() {
+                      _isLoading = false;
+                    });
                   }
                 },
                 child: const Text(
-                  "Confirm Lift",
+                  "Verify & Collect",
                   style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                ), // Added the missing child property back here safely
-              ), // Closed ElevatedButton
-            ], // Closed actions array
-          ); // Closed AppCustomAlertDialog
-        }, // Closed StatefulBuilder builder function
-      ), // Closed StatefulBuilder widget
-    ); // Closed showDialog wrapper execution block
-  } // Closed _openHouseProcessingOverlay method block
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
 
   void _handleSkippedLiftAction(int index) {
     Navigator.pop(context);
@@ -1223,6 +1308,14 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF020617),
+        body: Center(
+          child: CircularProgressIndicator(color: Color(0xFF10B981)),
+        ),
+      );
+    }
     return Scaffold(
       body: SafeArea(
         child: Column(
@@ -2069,16 +2162,42 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                 ),
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
-              onPressed: () {
-                if (_incidentReportController.text.trim().isEmpty) return;
-                _incidentReportController.clear();
+              onPressed: () async {
+                final reportStr = _incidentReportController.text.trim();
+                if (reportStr.isEmpty) return;
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text(
-                      "Incident log with metadata flagged for supervisor review 🚨",
+                      "Synchronizing incident report with backend server... ⏳",
                     ),
                   ),
                 );
+                try {
+                  final url = Uri.parse('http://10.181.174.87:8081/api/complaint/submit');
+                  final response = await http.post(
+                    url,
+                    headers: {'Content-Type': 'application/json'},
+                    body: jsonEncode({
+                      'userId': _workerId,
+                      'complaintDescription': 'Worker Incident: ' + reportStr,
+                      'image': '',
+                    }),
+                  );
+                  if (response.statusCode == 200) {
+                    _incidentReportController.clear();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          "Incident log successfully flagged for supervisor review 🚨",
+                        ),
+                      ),
+                    );
+                  } else {
+                    _showSnackBar("❌ Server rejected incident log.");
+                  }
+                } catch (e) {
+                  _showSnackBar("❌ Network error submitting incident.");
+                }
               },
               child: const Text(
                 "Report Incident to Terminal Control",
@@ -2151,7 +2270,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                   borderRadius: BorderRadius.circular(12),
                 ),
               ),
-              onPressed: () {
+              onPressed: () async {
                 if (_workerRating == 0) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
@@ -2161,15 +2280,38 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                   return;
                 }
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      "✓ Performance metric score $_workerRating logged securely! 🌟",
-                    ),
+                  const SnackBar(
+                    content: Text("Submitting performance feedback... ⏳"),
                   ),
                 );
-                setState(() {
-                  _workerRating = 0;
-                });
+                try {
+                  final url = Uri.parse('http://10.181.174.87:8081/api/feedback/submit');
+                  final response = await http.post(
+                    url,
+                    headers: {'Content-Type': 'application/json'},
+                    body: jsonEncode({
+                      'userId': _workerId,
+                      'feedbackDescription': 'Worker rating of system utility',
+                      'rating': _workerRating,
+                    }),
+                  );
+                  if (response.statusCode == 200) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          "✓ Performance metric score $_workerRating logged securely! 🌟",
+                        ),
+                      ),
+                    );
+                    setState(() {
+                      _workerRating = 0;
+                    });
+                  } else {
+                    _showSnackBar("❌ Server rejected feedback submission.");
+                  }
+                } catch (e) {
+                  _showSnackBar("❌ Network error submitting feedback.");
+                }
               },
               child: const Text(
                 "Submit Feedback Metrics",

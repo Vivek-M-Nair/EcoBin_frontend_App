@@ -554,6 +554,15 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
                                 "9876543210",
                                 Icons.phone_android_rounded,
                                 isNumeric: true,
+                                customValidator: (val) {
+                                  if (val == null || val.trim().isEmpty) return null;
+                                  final phone = val.trim();
+                                  final reg = RegExp(r'^\d{10}$');
+                                  if (!reg.hasMatch(phone)) {
+                                    return 'Phone number must be exactly 10 digits';
+                                  }
+                                  return null;
+                                },
                               ),
                               const SizedBox(height: 16),
                               _buildFieldLabel("Email Address"),
@@ -561,6 +570,18 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
                                 _emailController,
                                 "username@domain.com",
                                 Icons.alternate_email_rounded,
+                                customValidator: (val) {
+                                  if (val == null || val.trim().isEmpty) return null;
+                                  final email = val.trim();
+                                  if (!email.contains('@') || !email.endsWith('.com')) {
+                                    return 'Email must contain @ and end with .com';
+                                  }
+                                  final reg = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+                                  if (!reg.hasMatch(email)) {
+                                    return 'Enter a valid email address';
+                                  }
+                                  return null;
+                                },
                               ),
                               const SizedBox(height: 16),
                               _buildFieldLabel("Secure Password"),
@@ -708,6 +729,7 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
     bool isRequired = true,
     bool isNumeric = false,
     bool obscure = false,
+    String? Function(String?)? customValidator,
   }) {
     return TextFormField(
       controller: controller,
@@ -717,6 +739,9 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
       validator: (value) {
         if (isRequired && (value == null || value.trim().isEmpty)) {
           return 'Field required';
+        }
+        if (customValidator != null) {
+          return customValidator(value);
         }
         return null;
       },

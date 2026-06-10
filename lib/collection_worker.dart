@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'login_page.dart';
 import 'main.dart';
-import 'payment_page.dart';
 
 // --- DEVELOPMENT ISOLATED RUNTIME BADGE ---
 void main() => runApp(const TestWorkerApp());
@@ -42,6 +42,14 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
   bool _isLoading = true;
   String _workerId = "";
   String _workerName = "Dave R.";
+  List<Map<String, dynamic>> _assignments = [];
+  List<Map<String, dynamic>> _selectedZoneHouses = [];
+
+  String _scheduledZoneName = "";
+  int _numberOfHouses = 0;
+  int _wardNumber = 0;
+  String _villageName = "";
+  String _nextAssignedDate = "No upcoming date";
 
   // Mock Notifications loaded dynamically
   final List<String> _notifications = [
@@ -103,14 +111,65 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
   void initState() {
     super.initState();
     _parseInjectedLoginData();
-    _fetchAssignedAreaDetails();
+    _initializeData();
+  }
+
+  Future<void> _initializeData() async {
+    await getProfile();
+    if (_workerId.isNotEmpty) {
+      await getAssignments(_workerId);
+      await _fetchAssignedAreaDetails();
+      await _fetchScheduleQuietly();
+    } else {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _fetchScheduleQuietly() async {
+    if (useMockBackend) {
+      setState(() {
+        _nextAssignedDate = "2026-06-10";
+        if (_assignedWardName == "Pending assignment") {
+          _assignedWardName = "Zone: Zone A";
+        }
+      });
+      return;
+    }
+    if (_workerId.isEmpty) return;
+    try {
+      final url = Uri.parse('http://10.181.174.87:8081/api/worker/schedule/$_workerId');
+      final response = await http.get(url).timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        if (data['status'] == 'success') {
+          final List<dynamic> dates = data['assignedDates'] ?? [];
+          setState(() {
+            if (dates.isNotEmpty) {
+              _nextAssignedDate = dates[0].toString();
+            } else {
+              _nextAssignedDate = "No upcoming date";
+            }
+            if (data['assignedZoneId'] != null) {
+              _scheduledZoneName = data['assignedZoneId'].toString();
+              _assignedWardName = "Zone: ${data['assignedZoneId']}";
+            }
+          });
+        }
+      }
+    } catch (_) {}
   }
 
   void _parseInjectedLoginData() {
     if (widget.loginData.isNotEmpty) {
       setState(() {
         _workerId = widget.loginData['workerId'] ?? widget.loginData['userId'] ?? "";
-        _workerName = widget.loginData['workerName'] ?? widget.loginData['userName'] ?? "Dave R.";
+        _workerName = widget.loginData['collection_worker_name'] ?? widget.loginData['workerName'] ?? widget.loginData['userName'] ?? "Dave R.";
+        _scheduledZoneName = widget.loginData['scheduledZoneName'] ?? "";
+        _numberOfHouses = widget.loginData['numberOfHouses'] ?? 0;
+        _wardNumber = widget.loginData['wardNumber'] ?? 0;
+        _villageName = widget.loginData['villageName'] ?? "";
       });
     }
   }
@@ -118,6 +177,156 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
   String _capitalize(String s) {
     if (s.isEmpty) return "Pending";
     return s[0].toUpperCase() + s.substring(1).toLowerCase();
+  }
+
+  Future<void> getProfile() async {
+    setState(() {
+      _isLoading = true;
+    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final sessionStr = prefs.getString('auth_user_session');
+      String? token;
+      if (sessionStr != null) {
+        final session = jsonDecode(sessionStr);
+        token = session['token'] ?? session['jwt'] ?? session['accessToken'];
+        setState(() {
+          _workerId = session['workerId'] ?? session['userId'] ?? _workerId;
+          _workerName = session['collection_worker_name'] ?? session['workerName'] ?? session['userName'] ?? _workerName;
+          _scheduledZoneName = session['scheduledZoneName'] ?? _scheduledZoneName;
+          _numberOfHouses = session['numberOfHouses'] ?? _numberOfHouses;
+          _wardNumber = session['wardNumber'] ?? _wardNumber;
+          _villageName = session['villageName'] ?? _villageName;
+        });
+      }
+      token ??= widget.loginData['token'] ?? widget.loginData['jwt'] ?? widget.loginData['accessToken'];
+
+      if (_workerId.isEmpty) {
+        setState(() {
+          _isLoading = false;
+        });
+        return;
+      }
+
+      final url = Uri.parse('http://10.181.174.87:8081/api/worker/profile/$_workerId');
+      final response = await http.get(
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+          if (token != null) 'Authorization': 'Bearer $token',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        if (data['status'] == 'success') {
+          setState(() {
+            _workerName = data['name'] ?? data['collection_worker_name'] ?? _workerName;
+            _workerId = data['workerId'] ?? data['userId'] ?? data['id'] ?? _workerId;
+            _scheduledZoneName = data['scheduledZoneName'] ?? _scheduledZoneName;
+            _numberOfHouses = data['numberOfHouses'] ?? _numberOfHouses;
+            _wardNumber = data['wardNumber'] ?? _wardNumber;
+            _villageName = data['villageName'] ?? _villageName;
+          });
+        }
+      } else {
+        debugPrint("Failed to fetch profile: ${response.statusCode}");
+      }
+    } catch (e) {
+      debugPrint("Error fetching profile: $e");
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> getAssignments(String workerId) async {
+    try {
+      final url = Uri.parse('http://10.181.174.87:8081/api/worker/$workerId/assignments');
+      final response = await http.get(url);
+      if (response.statusCode == 200) {
+        final dynamic data = jsonDecode(response.body);
+        setState(() {
+          if (data is List) {
+            _assignments = List<Map<String, dynamic>>.from(data.map((x) => Map<String, dynamic>.from(x)));
+          } else {
+            _assignments = [];
+          }
+        });
+      } else {
+        debugPrint("Failed to fetch assignments: ${response.statusCode}");
+      }
+    } catch (e) {
+      debugPrint("Error fetching assignments: $e");
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getHouses(String zoneId) async {
+    final url = Uri.parse('http://10.181.174.87:8081/api/zone/$zoneId/houses');
+    final response = await http.get(url);
+    if (response.statusCode == 200) {
+      final dynamic data = jsonDecode(response.body);
+      if (data is List) {
+        final houses = List<Map<String, dynamic>>.from(data.map((x) => Map<String, dynamic>.from(x)));
+        setState(() {
+          _selectedZoneHouses = houses;
+        });
+        return houses;
+      }
+    }
+    throw Exception("Failed to load houses for zone $zoneId");
+  }
+
+  Future<List<Map<String, dynamic>>> getComplaintCategories() async {
+    try {
+      final url = Uri.parse('http://10.181.174.87:8081/api/complaint/categories');
+      final response = await http.get(url);
+      if (response.statusCode == 200) {
+        final dynamic data = jsonDecode(response.body);
+        if (data is List) {
+          return List<Map<String, dynamic>>.from(data.map((x) => Map<String, dynamic>.from(x)));
+        }
+      }
+    } catch (e) {
+      debugPrint("Error fetching complaint categories: $e");
+    }
+    return [
+      {"categoryId": "CAT_OVERFLOW", "categoryName": "Garbage Overflow"},
+      {"categoryId": "CAT_MISSED", "categoryName": "Missed Collection"},
+      {"categoryId": "CAT_DAMAGE", "categoryName": "Damaged Bin"},
+      {"categoryId": "CAT_HAZARDOUS", "categoryName": "Hazardous Material"},
+      {"categoryId": "CAT_OTHER", "categoryName": "Other Issues"},
+    ];
+  }
+
+  Future<bool> postComplaint({
+    required String workerId,
+    required String houseId,
+    required String category,
+    required String description,
+    String? photoUrl,
+  }) async {
+    try {
+      final url = Uri.parse('http://10.181.174.87:8081/api/complaint');
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'workerId': workerId,
+          'houseId': houseId,
+          'category': category,
+          'description': description,
+          'photoUrl': photoUrl ?? '',
+        }),
+      );
+      if (response.statusCode == 201 || response.statusCode == 200) {
+        return true;
+      }
+    } catch (e) {
+      debugPrint("Error posting complaint: $e");
+    }
+    return false;
   }
 
   Future<void> _fetchAssignedAreaDetails() async {
@@ -202,23 +411,40 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
   }
 
   /// Submits dynamic worker leave parameters to centralized Spring Boot backend
-  Future<void> _submitLeaveToBackend(String date, String reason) async {
+  Future<bool> _submitLeaveToBackend(String date, String reason) async {
     if (useMockBackend) {
       await Future.delayed(const Duration(milliseconds: 800));
-      return;
+      return true;
     }
     try {
-      final url = Uri.parse('http://10.181.174.87:8081/api/worker/apply-leave');
-      await http.post(
+      final url = Uri.parse('http://10.181.174.87:8081/api/worker/leave/request');
+      final response = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
+          'workerId': _workerId.trim(),
           'leaveDate': date,
           'reason': reason,
           'timestamp': DateTime.now().toIso8601String(),
         }),
       );
-    } catch (_) {}
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        if (data['status'] == 'success') {
+          return true;
+        } else {
+          _showSnackBar("⚠️ Leave request failed: ${data['message']}");
+          return false;
+        }
+      } else {
+        _showSnackBar("⚠️ Server error (${response.statusCode}). Please contact Admin.");
+        return false;
+      }
+    } catch (e) {
+      debugPrint("Error submitting leave: $e");
+      _showSnackBar("⚠️ Connection failure. Leave request not sent.");
+      return false;
+    }
   }
 
   /// Updates status configurations securely across Spring Boot backend services
@@ -303,6 +529,33 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
     }
   }
 
+  Widget _buildDetailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              color: Color(0xFF64748B),
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// Displays the interactive profile dialog sheet popup with all native options
   void _openUserProfilePanel(BuildContext context) {
     showModalBottomSheet(
@@ -331,16 +584,16 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                     children: [
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
-                        children: const [
+                        children: [
                           Text(
-                            "Dave R. Profile Context",
-                            style: TextStyle(
+                            "$_workerName Profile Context",
+                            style: const TextStyle(
                               color: Colors.white,
                               fontSize: 16,
                               fontWeight: FontWeight.w900,
                             ),
                           ),
-                          Text(
+                          const Text(
                             "Verified Crew Lead profile node",
                             style: TextStyle(
                               color: Color(0xFF94A3B8),
@@ -356,6 +609,26 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                     ],
                   ),
                   const Divider(color: Color(0xFF1E293B)),
+                  const SizedBox(height: 12),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF020617),
+                      border: Border.all(color: const Color(0xFF1E293B)),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildDetailRow("Worker ID", _workerId.isNotEmpty ? _workerId : "N/A"),
+                        _buildDetailRow("Scheduled Zone", _scheduledZoneName.isNotEmpty ? _scheduledZoneName : "N/A"),
+                        _buildDetailRow("Ward Number", _wardNumber > 0 ? _wardNumber.toString() : "N/A"),
+                        _buildDetailRow("Village/Area", _villageName.isNotEmpty ? _villageName : "N/A"),
+                        _buildDetailRow("Assigned Houses", _numberOfHouses > 0 ? _numberOfHouses.toString() : "N/A"),
+                      ],
+                    ),
+                  ),
                   const SizedBox(height: 12),
                   ListTile(
                     leading: const Icon(
@@ -624,16 +897,60 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
     );
   }
 
-  void _showTodayScheduleDialog() {
-    final List<Map<String, String>> previousSectors = [
-      {'day': '1 Day Ago', 'area': 'Ward 12 (Subhash Nagar)'},
-      {'day': '2 Days Ago', 'area': 'Ward 5 (Shastri Nagar)'},
-      {'day': '3 Days Ago', 'area': 'Ward 14 (Gandhi Nagar)'},
-      {'day': '4 Days Ago', 'area': 'Ward 8 (Nehru Colony)'},
-      {'day': '5 Days Ago', 'area': 'Ward 10 (Rajiv Circle)'},
-      {'day': '6 Days Ago', 'area': 'Ward 3 (Tagore Nagar)'},
-      {'day': '7 Days Ago', 'area': 'Ward 7 (Kamaraj Avenue)'},
-    ];
+  Future<void> _fetchScheduleAndShowDialog() async {
+    if (useMockBackend) {
+      await Future.delayed(const Duration(milliseconds: 600));
+      _showScheduleDetailDialog({
+        "status": "success",
+        "assignedZoneId": "Zone A",
+        "assignedPanchayath": "Grama Panchayath 12",
+        "leaveRequestedDate": "2026-06-15",
+        "assignedDates": ["2026-06-10", "2026-06-12", "2026-06-14"]
+      });
+      return;
+    }
+
+    if (_workerId.isEmpty) {
+      _showSnackBar("⚠️ Worker identity not verified. Please log in again.");
+      return;
+    }
+    
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final url = Uri.parse('http://10.181.174.87:8081/api/worker/schedule/$_workerId');
+      final response = await http.get(url).timeout(const Duration(seconds: 10));
+      
+      setState(() {
+        _isLoading = false;
+      });
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        if (data['status'] == 'success') {
+          _showScheduleDetailDialog(data);
+          return;
+        } else {
+          _showSnackBar("⚠️ No active schedule found on server: ${data['message'] ?? ''}");
+        }
+      } else {
+        _showSnackBar("⚠️ Failed to load schedule. Server status: ${response.statusCode}");
+      }
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+      });
+      _showSnackBar("⚠️ Connection error fetching schedule.");
+    }
+  }
+
+  void _showScheduleDetailDialog(Map<String, dynamic> scheduleData) {
+    final List<dynamic> dates = scheduleData['assignedDates'] ?? [];
+    final String zone = scheduleData['assignedZoneId'] ?? 'N/A';
+    final String panchayath = scheduleData['assignedPanchayath'] ?? 'N/A';
+    final String leaveDate = scheduleData['leaveRequestedDate'] ?? 'None';
 
     showDialog(
       context: context,
@@ -653,7 +970,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                   ),
                 ),
                 Text(
-                  "Assigned sectors & landmarks",
+                  "Assigned sectors & dates",
                   style: TextStyle(color: Color(0xFF64748B), fontSize: 10),
                 ),
               ],
@@ -684,7 +1001,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        "TODAY'S COORDINATES",
+                        "ASSIGNED ZONE",
                         style: TextStyle(
                           fontSize: 8,
                           fontWeight: FontWeight.bold,
@@ -694,7 +1011,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        "Area: $_assignedWardName",
+                        "Zone: $zone",
                         style: const TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.bold,
@@ -703,7 +1020,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        "Total Load: $_assignedTotalHouseCount Houses",
+                        "Panchayath: $panchayath",
                         style: const TextStyle(
                           fontSize: 11,
                           color: Color(0xFF94A3B8),
@@ -713,7 +1030,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                       const Divider(color: Color(0xFF1E293B)),
                       const SizedBox(height: 8),
                       const Text(
-                        "📍 LANDMARK",
+                        "📅 LEAVE STATUS",
                         style: TextStyle(
                           fontSize: 8,
                           fontWeight: FontWeight.bold,
@@ -721,34 +1038,22 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                         ),
                       ),
                       const SizedBox(height: 2),
-                      const Text(
-                        "Near Gandhi Statue, Main Intersection",
-                        style: TextStyle(
+                      Text(
+                        leaveDate.isNotEmpty && leaveDate != "null"
+                            ? "Approved Leave: $leaveDate"
+                            : "No approved leaves active",
+                        style: const TextStyle(
                           fontSize: 11,
                           color: Colors.white,
                           fontWeight: FontWeight.bold,
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        "Fully Addressed",
-                        style: TextStyle(
-                          fontSize: 8,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF10B981),
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      const Text(
-                        "Sectors A-H, Main Gandhi Road Junction",
-                        style: TextStyle(fontSize: 11, color: Colors.white),
                       ),
                     ],
                   ),
                 ),
                 const SizedBox(height: 20),
                 const Text(
-                  "LAST 7 DAYS ASSIGNED SECTORS",
+                  "ASSIGNED DATES FOR COLLECTION",
                   style: TextStyle(
                     fontSize: 9,
                     fontWeight: FontWeight.bold,
@@ -757,39 +1062,58 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                ListView.separated(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: previousSectors.length,
-                  separatorBuilder: (context, index) =>
-                      const Divider(color: Color(0xFF1E293B)),
-                  itemBuilder: (context, index) {
-                    final item = previousSectors[index];
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4.0),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            item['area']!,
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: Color(0xFFCBD5E1),
+                dates.isEmpty
+                    ? const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 12.0),
+                        child: Text(
+                          "No specific collection dates scheduled.",
+                          style: TextStyle(color: Color(0xFF64748B), fontSize: 11),
+                        ),
+                      )
+                    : ListView.separated(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: dates.length,
+                        separatorBuilder: (context, index) =>
+                            const Divider(color: Color(0xFF1E293B)),
+                        itemBuilder: (context, index) {
+                          final dateItem = dates[index];
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4.0),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Row(
+                                  children: [
+                                    const Icon(
+                                      Icons.calendar_today_rounded,
+                                      color: Color(0xFF10B981),
+                                      size: 12,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      dateItem.toString(),
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Color(0xFFCBD5E1),
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const Text(
+                                  "Scheduled",
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    color: Color(0xFF10B981),
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
                             ),
-                          ),
-                          Text(
-                            item['day']!,
-                            style: const TextStyle(
-                              fontSize: 9,
-                              color: Color(0xFF64748B),
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
+                          );
+                        },
                       ),
-                    );
-                  },
-                ),
               ],
             ),
           ),
@@ -978,9 +1302,9 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                 final String reasonStr = _leaveReasonController.text.trim();
                 Navigator.pop(context);
 
-                await _submitLeaveToBackend(targetDate, reasonStr);
+                final bool success = await _submitLeaveToBackend(targetDate, reasonStr);
 
-                if (mounted) {
+                if (success && mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text(
@@ -1345,6 +1669,8 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                     const SizedBox(height: 10),
                     _buildOperationNavigationRow(),
                     const SizedBox(height: 24),
+                    _buildAssignmentsSection(),
+                    const SizedBox(height: 24),
                     if (_showCollectionUpdate) ...[
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1440,9 +1766,11 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                   CircleAvatar(
                     radius: 12,
                     backgroundColor: const Color(0xFF10B981).withOpacity(0.15),
-                    child: const Text(
-                      'DR',
-                      style: TextStyle(
+                    child: Text(
+                      _workerName.length >= 2
+                          ? _workerName.substring(0, 2).toUpperCase()
+                          : _workerName.toUpperCase(),
+                      style: const TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.bold,
                         color: Color(0xFF10B981),
@@ -1452,8 +1780,8 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                   const SizedBox(width: 8),
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
-                    children: const [
-                      Text(
+                    children: [
+                      const Text(
                         'CREW LEAD',
                         style: TextStyle(
                           fontSize: 7,
@@ -1462,8 +1790,8 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                         ),
                       ),
                       Text(
-                        'Dave R.',
-                        style: TextStyle(
+                        _workerName,
+                        style: const TextStyle(
                           fontSize: 11,
                           color: Colors.white,
                           fontWeight: FontWeight.bold,
@@ -1477,6 +1805,138 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildAssignmentsSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'ASSIGNED WASTE-COLLECTION AREAS',
+          style: TextStyle(
+            fontSize: 9,
+            fontWeight: FontWeight.w900,
+            color: Color(0xFF64748B),
+            letterSpacing: 1,
+          ),
+        ),
+        const SizedBox(height: 10),
+        if (_assignments.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F172A),
+              border: Border.all(color: const Color(0xFF1E293B)),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: const Center(
+              child: Text(
+                "No assigned areas found.",
+                style: TextStyle(color: Color(0xFF64748B), fontSize: 12),
+              ),
+            ),
+          )
+        else
+          ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _assignments.length,
+            separatorBuilder: (context, index) => const SizedBox(height: 10),
+            itemBuilder: (context, index) {
+              final area = _assignments[index];
+              final String zoneId = area['zoneId'] ?? 'N/A';
+              final String zoneName = area['zoneName'] ?? 'Unnamed Zone';
+              final String address = area['address'] ?? 'No Address';
+              
+              return InkWell(
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => ZoneHousesDetailScreen(
+                        zoneId: zoneId,
+                        zoneName: zoneName,
+                        workerId: _workerId,
+                        getHousesCallback: getHouses,
+                        getComplaintCategoriesCallback: getComplaintCategories,
+                        postComplaintCallback: postComplaint,
+                      ),
+                    ),
+                  );
+                },
+                borderRadius: BorderRadius.circular(16),
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0F172A),
+                    border: Border.all(color: const Color(0xFF1E293B)),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              zoneName,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.location_on_outlined,
+                                  color: Color(0xFF10B981),
+                                  size: 12,
+                                ),
+                                const SizedBox(width: 4),
+                                Expanded(
+                                  child: Text(
+                                    address,
+                                    style: const TextStyle(
+                                      color: Color(0xFF94A3B8),
+                                      fontSize: 11,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF10B981).withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          zoneId,
+                          style: const TextStyle(
+                            color: Color(0xFF10B981),
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+      ],
     );
   }
 
@@ -1534,7 +1994,6 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
               ),
             ],
           ),
-          const SizedBox(height: 16),
           Text(
             _assignedWardName,
             style: const TextStyle(
@@ -1543,6 +2002,27 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
               color: Colors.white,
             ),
           ),
+          if (_nextAssignedDate.isNotEmpty && _nextAssignedDate != "No upcoming date") ...[
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                const Icon(
+                  Icons.calendar_today_rounded,
+                  color: Color(0xFFCCFBF1),
+                  size: 13,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  "Next Collection: $_nextAssignedDate",
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFFCCFBF1),
+                  ),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 12),
           const Divider(color: Colors.white12, height: 1),
           const SizedBox(height: 12),
@@ -1594,7 +2074,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
             Icons.alt_route_rounded,
             "View Schedule",
             const Color(0xFF10B981),
-            _showTodayScheduleDialog,
+            _fetchScheduleAndShowDialog,
           ),
         ),
         const SizedBox(width: 12),
@@ -1603,20 +2083,56 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
             Icons.fact_check_rounded,
             "Collection Update",
             const Color(0xFF06B6D4),
-            () {
+            () async {
               setState(() {
                 _showCollectionUpdate = !_showCollectionUpdate;
               });
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    _showCollectionUpdate
-                        ? "Live tracking manifest expanded below! 🔍"
-                        : "Live tracking manifest minimized.",
+              if (_showCollectionUpdate) {
+                final String targetZoneId = _scheduledZoneName.isNotEmpty
+                    ? _scheduledZoneName
+                    : (_assignments.isNotEmpty ? _assignments[0]['zoneId'] ?? '' : '');
+                if (targetZoneId.isNotEmpty) {
+                  setState(() {
+                    _isLoading = true;
+                  });
+                  try {
+                    final housesList = await getHouses(targetZoneId);
+                    setState(() {
+                      _houseManifestList.clear();
+                      for (var h in housesList) {
+                        _houseManifestList.add({
+                          'registeredUserId': h['registeredUserId'] ?? '',
+                          'houseNo': h['houseNumber'] ?? h['houseNo'] ?? '',
+                          'wardNo': h['wardNumber'] ?? h['wardNo'] ?? 0,
+                          'owner': h['ownerName'] ?? h['owner'] ?? '',
+                          'paymentStatus': (h['paymentStatus'] as String?)?.toLowerCase() == 'paid' ? 'Paid' : 'Pending',
+                          'feeAmount': (h['amountPending'] as num?)?.toDouble() ?? 0.0,
+                          'collectStatus': _capitalize(h['collectionStatus'] ?? 'Pending'),
+                        });
+                      }
+                      _assignedTotalHouseCount = housesList.length;
+                    });
+                  } catch (e) {
+                    debugPrint("Error loading zone houses: $e");
+                  } finally {
+                    setState(() {
+                      _isLoading = false;
+                    });
+                  }
+                }
+              }
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      _showCollectionUpdate
+                          ? "Live tracking manifest expanded below! 🔍"
+                          : "Live tracking manifest minimized.",
+                    ),
+                    backgroundColor: const Color(0xFF06B6D4),
                   ),
-                  backgroundColor: const Color(0xFF06B6D4),
-                ),
-              );
+                );
+              }
             },
           ),
         ),
@@ -2410,5 +2926,451 @@ class AppCustomAlertDialog extends StatelessWidget {
       content: content,
       actions: actions,
     );
+  }
+}
+
+class ZoneHousesDetailScreen extends StatefulWidget {
+  final String zoneId;
+  final String zoneName;
+  final String workerId;
+  final Future<List<Map<String, dynamic>>> Function(String) getHousesCallback;
+  final Future<List<Map<String, dynamic>>> Function() getComplaintCategoriesCallback;
+  final Future<bool> Function({
+    required String workerId,
+    required String houseId,
+    required String category,
+    required String description,
+    String? photoUrl,
+  }) postComplaintCallback;
+
+  const ZoneHousesDetailScreen({
+    super.key,
+    required this.zoneId,
+    required this.zoneName,
+    required this.workerId,
+    required this.getHousesCallback,
+    required this.getComplaintCategoriesCallback,
+    required this.postComplaintCallback,
+  });
+
+  @override
+  State<ZoneHousesDetailScreen> createState() => _ZoneHousesDetailScreenState();
+}
+
+class _ZoneHousesDetailScreenState extends State<ZoneHousesDetailScreen> {
+  late Future<List<Map<String, dynamic>>> _housesFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _housesFuture = widget.getHousesCallback(widget.zoneId);
+  }
+
+  void _refreshHouses() {
+    setState(() {
+      _housesFuture = widget.getHousesCallback(widget.zoneId);
+    });
+  }
+
+  void _openComplaintModal(Map<String, dynamic> house) async {
+    final TextEditingController descController = TextEditingController();
+    List<Map<String, dynamic>> categories = [];
+    String? selectedCategory;
+    bool isSubmitting = false;
+
+    // Fetch categories first
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return FutureBuilder<List<Map<String, dynamic>>>(
+              future: widget.getComplaintCategoriesCallback(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting && categories.isEmpty) {
+                  return const AppCustomAlertDialog(
+                    title: Text("Loading...", style: TextStyle(color: Colors.white)),
+                    content: SizedBox(
+                      height: 100,
+                      child: Center(
+                        child: CircularProgressIndicator(color: Color(0xFF10B981)),
+                      ),
+                    ),
+                  );
+                }
+
+                if (snapshot.hasData && categories.isEmpty) {
+                  categories = snapshot.data!;
+                  if (categories.isNotEmpty) {
+                    selectedCategory = categories[0]['categoryName'];
+                  }
+                }
+
+                return AppCustomAlertDialog(
+                  title: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              "Raise Complaint",
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Text(
+                              "House: ${house['houseId'] ?? house['houseNo'] ?? 'N/A'}",
+                              style: const TextStyle(
+                                color: Color(0xFF94A3B8),
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Color(0xFF64748B)),
+                        onPressed: isSubmitting ? null : () => Navigator.pop(context),
+                      ),
+                    ],
+                  ),
+                  content: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          "COMPLAINT CATEGORY",
+                          style: TextStyle(
+                            fontSize: 8,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF64748B),
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF020617),
+                            border: Border.all(color: const Color(0xFF1E293B)),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              value: selectedCategory,
+                              dropdownColor: const Color(0xFF0F172A),
+                              isExpanded: true,
+                              style: const TextStyle(color: Colors.white, fontSize: 12),
+                              items: categories
+                                  .map((cat) => DropdownMenuItem<String>(
+                                        value: cat['categoryName'],
+                                        child: Text(cat['categoryName'] ?? ''),
+                                      ))
+                                  .toList(),
+                              onChanged: isSubmitting
+                                  ? null
+                                  : (val) {
+                                      setModalState(() {
+                                        selectedCategory = val;
+                                      });
+                                    },
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          "DESCRIPTION",
+                          style: TextStyle(
+                            fontSize: 8,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF64748B),
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        TextField(
+                          controller: descController,
+                          maxLines: 3,
+                          enabled: !isSubmitting,
+                          style: const TextStyle(color: Colors.white, fontSize: 12),
+                          decoration: InputDecoration(
+                            hintText: "Enter complaint details...",
+                            hintStyle: const TextStyle(color: Color(0xFF475569)),
+                            fillColor: const Color(0xFF020617),
+                            filled: true,
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: const BorderSide(color: Color(0xFF1E293B)),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: const BorderSide(color: Color(0xFF10B981)),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: isSubmitting ? null : () => Navigator.pop(context),
+                      child: const Text(
+                        "Cancel",
+                        style: TextStyle(color: Color(0xFF64748B)),
+                      ),
+                    ),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF10B981),
+                        foregroundColor: const Color(0xFF020617),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      onPressed: isSubmitting
+                          ? null
+                          : () async {
+                              final desc = descController.text.trim();
+                              if (desc.isEmpty) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text("Description is required")),
+                                );
+                                return;
+                              }
+                              setModalState(() {
+                                isSubmitting = true;
+                              });
+
+                              final houseId = house['houseId'] ?? house['houseNo'] ?? '';
+                              final success = await widget.postComplaintCallback(
+                                workerId: widget.workerId,
+                                houseId: houseId,
+                                category: selectedCategory ?? 'General',
+                                description: desc,
+                              );
+
+                              if (!mounted) return;
+                              Navigator.pop(context); // Close dialog
+
+                              if (success) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text("✓ Complaint filed successfully!"),
+                                    backgroundColor: Color(0xFF10B981),
+                                  ),
+                                );
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text("❌ Failed to submit complaint. Try again."),
+                                    backgroundColor: Color(0xFFF43F5E),
+                                  ),
+                                );
+                              }
+                            },
+                      child: isSubmitting
+                          ? const SizedBox(
+                              height: 16,
+                              width: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF020617)),
+                              ),
+                            )
+                          : const Text(
+                              "Submit",
+                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                            ),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF020617),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0F172A),
+        iconTheme: const IconThemeData(color: Colors.white),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.zoneName,
+              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            Text(
+              "Zone ID: ${widget.zoneId}",
+              style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+            ),
+          ],
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh, color: Colors.white),
+            onPressed: _refreshHouses,
+          ),
+        ],
+      ),
+      body: FutureBuilder<List<Map<String, dynamic>>>(
+        future: _housesFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(
+              child: CircularProgressIndicator(color: Color(0xFF10B981)),
+            );
+          }
+          if (snapshot.hasError) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.error_outline, size: 48, color: Color(0xFFF43F5E)),
+                    const SizedBox(height: 12),
+                    Text(
+                      "Failed to load houses.\n${snapshot.error}",
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 14),
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+                      onPressed: _refreshHouses,
+                      child: const Text("Retry", style: TextStyle(color: Color(0xFF020617))),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          final houses = snapshot.data ?? [];
+          if (houses.isEmpty) {
+            return const Center(
+              child: Text(
+                "No houses registered in this zone.",
+                style: TextStyle(color: Color(0xFF64748B), fontSize: 14),
+              ),
+            );
+          }
+
+          return ListView.separated(
+            padding: const EdgeInsets.all(16),
+            itemCount: houses.length,
+            separatorBuilder: (context, index) => const SizedBox(height: 12),
+            itemBuilder: (context, index) {
+              final house = houses[index];
+              final String houseId = house['houseId'] ?? house['houseNo'] ?? 'N/A';
+              final String owner = house['ownerName'] ?? house['owner'] ?? 'Unknown Owner';
+              final String address = house['address'] ?? 'No Address';
+              final String status = house['status'] ?? house['collectStatus'] ?? 'Pending';
+
+              return Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0F172A),
+                  border: Border.all(color: const Color(0xFF1E293B)),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          "House: $houseId",
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: _getStatusColor(status).withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            status.toUpperCase(),
+                            style: TextStyle(
+                              color: _getStatusColor(status),
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      "Owner: $owner",
+                      style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 12),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      "Address: $address",
+                      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFF43F5E).withOpacity(0.1),
+                            foregroundColor: const Color(0xFFFDA4AF),
+                            side: const BorderSide(color: Color(0xFFF43F5E)),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          ),
+                          onPressed: () => _openComplaintModal(house),
+                          icon: const Icon(Icons.report_problem_outlined, size: 14),
+                          label: const Text(
+                            "Send Complaint",
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Color _getStatusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'completed':
+      case 'collected':
+      case 'paid':
+        return const Color(0xFF10B981);
+      case 'skipped':
+        return const Color(0xFFF43F5E);
+      default:
+        return const Color(0xFFF59E0B);
+    }
   }
 }

@@ -85,7 +85,19 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
       final mockRolePage = userId.startsWith("CW-")
           ? "collection_worker_page"
           : "user_page";
-      final mockPayload = {"status": "success", "page": mockRolePage};
+      final mockPayload = {
+        "status": "success",
+        "page": mockRolePage,
+        "userId": userId,
+        "workerId": userId,
+        if (mockRolePage == "collection_worker_page") ...{
+          "collection_worker_name": "Dave R.",
+          "scheduledZoneName": "Zone A",
+          "numberOfHouses": 10,
+          "wardNumber": 12,
+          "villageName": "Subhash Nagar",
+        }
+      };
 
       await _saveSessionToCache(userId, mockPayload);
       _handleRoleRouting(mockRolePage, userId, mockPayload);
@@ -109,6 +121,11 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
         if (response.statusCode == 200) {
           final Map<String, dynamic> responseData = jsonDecode(response.body);
           final String targetPage = responseData['page'] ?? '';
+
+          // Inject user/worker identification into payload
+          responseData['userId'] = userId;
+          responseData['workerId'] = userId;
+          responseData['houseId'] = userId;
 
           await _saveSessionToCache(userId, responseData);
 

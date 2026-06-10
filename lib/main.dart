@@ -60,6 +60,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
   String _assignedAgentName = "Not yet assigned";
   double _amountDue = 0.00;
   List<String> _historicalDates = [];
+  String _zoneLastCollectedDate = "";
 
   // Text Controllers for Input fields
   final TextEditingController _complaintTextController =
@@ -83,7 +84,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
         widget.loginData['status'] == 'success') {
       setState(() {
         // 1. FIRST ASIGN THE CURRENT USER ID SO THE DASHBOARD CAN TALK TO MONGO
-        _currentUserId = widget.loginData['houseId'] ?? "";
+        _currentUserId = widget.loginData['houseId'] ?? widget.loginData['userId'] ?? "";
 
         // 2. MAP THE INCOMING PROFILE PROPERTIES TO DYNAMIC VARIABLES
         _userName = widget.loginData['userName'] ?? "User Account";
@@ -143,6 +144,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                 data['last10CollectedDates'],
               );
             }
+            _zoneLastCollectedDate = data['zoneLastCollectedDate'] ?? "";
             _isLoading = false;
           });
           return;
@@ -159,6 +161,165 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
     });
     _showSnackBar(
       "⚠️ Running in offline backup mode. Check your server IP connection.",
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchNotifications() async {
+    if (_currentUserId.isEmpty) return [];
+    try {
+      final response = await http.get(
+        Uri.parse('http://10.181.174.87:8081/api/notifications/$_currentUserId'),
+      ).timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(response.body);
+        return List<Map<String, dynamic>>.from(data);
+      }
+    } catch (e) {
+      debugPrint("Error fetching notifications: $e");
+    }
+    return [];
+  }
+
+  Future<void> _deleteNotification(String id) async {
+    try {
+      final response = await http.delete(
+        Uri.parse('http://10.181.174.87:8081/api/notifications/$id'),
+      ).timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        _showSnackBar("Notification deleted successfully");
+      }
+    } catch (e) {
+      debugPrint("Error deleting notification: $e");
+    }
+  }
+
+  void _showNotificationsModal() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF0F172A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
+      ),
+      builder: (context) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.6,
+          minChildSize: 0.4,
+          maxChildSize: 0.9,
+          expand: false,
+          builder: (context, scrollController) {
+            return StatefulBuilder(
+              builder: (context, setModalState) {
+                return FutureBuilder<List<Map<String, dynamic>>>(
+                  future: _fetchNotifications(),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator(color: Color(0xFF10B981)));
+                    }
+                    final list = snapshot.data ?? [];
+                    return Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text(
+                                'Notifications',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.close, color: Color(0xFF94A3B8)),
+                                onPressed: () => Navigator.pop(context),
+                              ),
+                            ],
+                          ),
+                          const Divider(color: Color(0xFF1E293B)),
+                          Expanded(
+                            child: list.isEmpty
+                                ? const Center(
+                                    child: Text(
+                                      'No notifications found',
+                                      style: TextStyle(color: Color(0xFF64748B)),
+                                    ),
+                                  )
+                                : ListView.builder(
+                                    controller: scrollController,
+                                    itemCount: list.length,
+                                    itemBuilder: (context, index) {
+                                      final item = list[index];
+                                      return Container(
+                                        margin: const EdgeInsets.symmetric(vertical: 8),
+                                        padding: const EdgeInsets.all(12),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF1E293B),
+                                          borderRadius: BorderRadius.circular(16),
+                                          border: Border.all(color: const Color(0xFF334155)),
+                                        ),
+                                        child: Row(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            const Icon(Icons.info_outline, color: Color(0xFF10B981), size: 20),
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    item['title'] ?? 'Notification',
+                                                    style: const TextStyle(
+                                                      fontWeight: FontWeight.bold,
+                                                      fontSize: 14,
+                                                      color: Colors.white,
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 4),
+                                                  Text(
+                                                    item['message'] ?? '',
+                                                    style: const TextStyle(
+                                                      fontSize: 12,
+                                                      color: Color(0xFF94A3B8),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 6),
+                                                  Text(
+                                                    item['createdAt'] ?? '',
+                                                    style: const TextStyle(
+                                                      fontSize: 10,
+                                                      color: Color(0xFF475569),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                            IconButton(
+                                              icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
+                                              onPressed: () async {
+                                                await _deleteNotification(item['id'] ?? '');
+                                                setModalState(() {});
+                                              },
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    },
+                                  ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
+            );
+          },
+        );
+      },
     );
   }
 
@@ -194,6 +355,32 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
         duration: const Duration(seconds: 2),
       ),
     );
+  }
+
+  bool _isScheduleWithin4Days() {
+    if (_nextCollectionDate == "Pending assignment" ||
+        _nextCollectionDate.isEmpty ||
+        _nextCollectionDate == "Not scheduled") {
+      return false;
+    }
+    try {
+      final parts = _nextCollectionDate.split('-');
+      if (parts.length == 3) {
+        final day = int.parse(parts[0]);
+        final month = int.parse(parts[1]);
+        final year = int.parse(parts[2]);
+        final scheduledDate = DateTime(year, month, day);
+        final today = DateTime.now();
+        final scheduledDateOnly =
+            DateTime(scheduledDate.year, scheduledDate.month, scheduledDate.day);
+        final todayOnly = DateTime(today.year, today.month, today.day);
+        final differenceInDays = scheduledDateOnly.difference(todayOnly).inDays;
+        return differenceInDays >= 0 && differenceInDays <= 4;
+      }
+    } catch (e) {
+      debugPrint("Error parsing date: $e");
+    }
+    return false;
   }
 
   @override
@@ -396,47 +583,58 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
               ),
             ],
           ),
-          InkWell(
-            onTap: () => _showActionModal(
-              'Account Options',
-              _buildProfileModalContent(),
-            ),
-            borderRadius: BorderRadius.circular(30),
-            child: Container(
-              padding: const EdgeInsets.all(4).copyWith(right: 12),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1E293B),
-                border: Border.all(
-                  color: const Color(0xFF334155).withOpacity(0.8),
+          Row(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.notifications_none, color: Colors.white, size: 22),
+                onPressed: _showNotificationsModal,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+              ),
+              const SizedBox(width: 12),
+              InkWell(
+                onTap: () => _showActionModal(
+                  'Account Options',
+                  _buildProfileModalContent(),
                 ),
                 borderRadius: BorderRadius.circular(30),
-              ),
-              child: Row(
-                children: [
-                  CircleAvatar(
-                    radius: 14,
-                    backgroundColor: const Color(0xFF10B981).withOpacity(0.2),
-                    child: Text(
-                      _getInitials(_userName),
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF10B981),
+                child: Container(
+                  padding: const EdgeInsets.all(4).copyWith(right: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E293B),
+                    border: Border.all(
+                      color: const Color(0xFF334155).withOpacity(0.8),
+                    ),
+                    borderRadius: BorderRadius.circular(30),
+                  ),
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 14,
+                        backgroundColor: const Color(0xFF10B981).withOpacity(0.2),
+                        child: Text(
+                          _getInitials(_userName),
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF10B981),
+                          ),
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _userName,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFFE2E8F0),
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 8),
-                  Text(
-                    _userName,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: Color(0xFFE2E8F0),
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
+                ),
               ),
-            ),
+            ],
           ),
         ],
       ),
@@ -1356,7 +1554,6 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                 width: double.infinity,
                 child: ElevatedButton(
                   onPressed: () async {
-                    Navigator.pop(context);
                     final bool? result = await Navigator.push(
                       context,
                       MaterialPageRoute(
@@ -1365,6 +1562,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                       ),
                     );
                     if (result == true) {
+                      Navigator.pop(context); // Close the bottom sheet now
                       _showSnackBar("Processing payment settlement... 💳");
                       try {
                         final response = await http.post(
@@ -1428,21 +1626,49 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
     );
   }
 
+
+
   Widget _buildRequestModalContent() {
     final DateTime today = DateTime.now();
-    final DateTime lastCollectedDate = today.subtract(const Duration(days: 18));
-    final int daysSinceLastCollection = today
-        .difference(lastCollectedDate)
-        .inDays;
-    const double normalAmount = 10.00;
-    final double calculatedAmount = daysSinceLastCollection > 15
-        ? normalAmount
-        : (normalAmount * 2);
-    final String formattedLastDate =
-        "${lastCollectedDate.day} ${_getMonthName(lastCollectedDate.month)}, ${lastCollectedDate.year}";
+    int daysSinceLastCollection = 999;
+    DateTime? lastCollectedDate;
+
+    // Prefer the zone's last collection date to align with backend calculations
+    String referenceDateStr = "";
+    if (_zoneLastCollectedDate.isNotEmpty && _zoneLastCollectedDate != "Never") {
+      referenceDateStr = _zoneLastCollectedDate;
+    } else if (_historicalDates.isNotEmpty) {
+      referenceDateStr = _historicalDates[0];
+    }
+
+    if (referenceDateStr.isNotEmpty) {
+      try {
+        final parts = referenceDateStr.split('-');
+        if (parts.length == 3) {
+          final day = int.parse(parts[0]);
+          final month = int.parse(parts[1]);
+          final year = int.parse(parts[2]);
+          lastCollectedDate = DateTime(year, month, day);
+          final todayOnly = DateTime(today.year, today.month, today.day);
+          daysSinceLastCollection = todayOnly.difference(lastCollectedDate).inDays;
+        }
+      } catch (e) {
+        debugPrint("Error parsing reference date: $e");
+      }
+    }
+
+    final double calculatedAmount = daysSinceLastCollection < 15 ? 100.0 : 50.0;
+    final String formattedLastDate = lastCollectedDate != null
+        ? "${lastCollectedDate.day} ${_getMonthName(lastCollectedDate.month)}, ${lastCollectedDate.year}"
+        : "Never collected";
     final String nextCollectionText = _isDateAssigned
         ? _nextCollectionDate
         : "will be assigned within 24 hours";
+    final bool isWithin4Days = _isScheduleWithin4Days();
+
+    final bool cond1 = daysSinceLastCollection > 2;
+    final bool cond2 = isWithin4Days;
+    final bool canRequest = cond1 && !cond2;
 
     return StatefulBuilder(
       builder: (context, setModalState) {
@@ -1515,11 +1741,11 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
               padding: const EdgeInsets.all(14),
               margin: const EdgeInsets.only(bottom: 20),
               decoration: BoxDecoration(
-                color: calculatedAmount > normalAmount
+                color: daysSinceLastCollection < 15
                     ? const Color(0xFFF43F5E).withOpacity(0.1)
                     : const Color(0xFF10B981).withOpacity(0.1),
                 border: Border.all(
-                  color: calculatedAmount > normalAmount
+                  color: daysSinceLastCollection < 15
                       ? const Color(0xFFF43F5E).withOpacity(0.3)
                       : const Color(0xFF10B981).withOpacity(0.3),
                 ),
@@ -1533,13 +1759,13 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          calculatedAmount > normalAmount
+                          daysSinceLastCollection < 15
                               ? '🚨 RUSH REQUEST FEE APPLYING'
                               : '🌿 STANDARD CLEANUP FEE',
                           style: TextStyle(
                             fontSize: 9,
                             fontWeight: FontWeight.bold,
-                            color: calculatedAmount > normalAmount
+                            color: daysSinceLastCollection < 15
                                 ? const Color(0xFFFDA4AF)
                                 : const Color(0xFF6EE7B7),
                             letterSpacing: 0.5,
@@ -1547,9 +1773,9 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          calculatedAmount > normalAmount
-                              ? 'Requested within 15 days of your last collection.'
-                              : 'Standard collection interval maintained.',
+                          daysSinceLastCollection < 15
+                              ? 'Requested within 15 days of your last collection (₹100).'
+                              : 'Standard collection interval maintained (₹50).',
                           style: const TextStyle(
                             fontSize: 10,
                             color: Color(0xFF94A3B8),
@@ -1599,32 +1825,53 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
               ),
             ),
             const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () async {
-                  final String reasonStr = _immediateRequestReasonController.text.trim();
-                  Navigator.pop(context);
-                  final bool? result = await Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) =>
-                          PaymentPage(amountToPay: calculatedAmount),
+            if (!canRequest) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF43F5E).withOpacity(0.1),
+                  border: Border.all(
+                    color: const Color(0xFFF43F5E).withOpacity(0.3),
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.error_outline, color: Color(0xFFFDA4AF), size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        !cond1
+                            ? 'Immediate request is unavailable because the last collection in your zone was within the last 2 days (actual: $daysSinceLastCollection days ago).'
+                            : 'Immediate request is unavailable because your next collection is already scheduled within the next 4 days ($nextCollectionText).',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFFFDA4AF),
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ),
-                  );
-                  if (result == true) {
-                    _showSnackBar("Processing instant cleanup payment... 💳");
-                    try {
-                      final payResponse = await http.post(
-                        Uri.parse('http://10.181.174.87:8081/api/payment/pay'),
-                        headers: {'Content-Type': 'application/json'},
-                        body: jsonEncode({
-                          'userId': _currentUserId,
-                          'amountPaid': calculatedAmount,
-                        }),
-                      );
-                      if (payResponse.statusCode == 200) {
-                        _showSnackBar("Filing immediate collection request... ⏳");
+                  ],
+                ),
+              ),
+            ] else ...[
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () async {
+                    final String reasonStr = _immediateRequestReasonController.text.trim();
+                    final bool? result = await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) =>
+                            PaymentPage(amountToPay: calculatedAmount),
+                      ),
+                    );
+                    if (result == true) {
+                      Navigator.pop(context); // Close the bottom sheet now
+                      _showSnackBar("Filing immediate collection request... ⏳");
+                      try {
                         final url = Uri.parse(
                           'http://10.181.174.87:8081/api/collection/immediate-request',
                         );
@@ -1637,38 +1884,54 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                           }),
                         );
                         if (response.statusCode == 200) {
-                          _showSnackBar(
-                            "🚀 Request committed! Cluster database synchronized successfully.",
-                          );
-                          _immediateRequestReasonController.clear();
-                          _fetchLiveCollectionDashboard();
+                          try {
+                            final Map<String, dynamic> resBody = jsonDecode(response.body);
+                            if (resBody['status'] == 'success') {
+                              _showSnackBar(
+                                "🚀 Request committed! Cluster database synchronized successfully.",
+                              );
+                              _immediateRequestReasonController.clear();
+                              _fetchLiveCollectionDashboard();
+                            } else {
+                              final String errorMsg = resBody['message'] ?? "Request rejected by server controller.";
+                              _showSnackBar("❌ $errorMsg");
+                            }
+                          } catch (e) {
+                            _showSnackBar("🚀 Request committed! Cluster database synchronized successfully.");
+                            _immediateRequestReasonController.clear();
+                            _fetchLiveCollectionDashboard();
+                          }
                         } else {
-                          _showSnackBar("❌ Request rejected by server controller.");
+                          try {
+                            final Map<String, dynamic> resBody = jsonDecode(response.body);
+                            final String errorMsg = resBody['message'] ?? "Request rejected by server controller.";
+                            _showSnackBar("❌ $errorMsg");
+                          } catch (_) {
+                            _showSnackBar("❌ Request rejected by server controller.");
+                          }
                         }
-                      } else {
-                        _showSnackBar("❌ Payment failed during request processing.");
+                      } catch (e) {
+                        _showSnackBar(
+                          "⚠ Network error during request processing.",
+                        );
                       }
-                    } catch (e) {
-                      _showSnackBar(
-                        "⚠ Network error during request processing.",
-                      );
                     }
-                  }
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF10B981),
-                  foregroundColor: const Color(0xFF020617),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF10B981),
+                    foregroundColor: const Color(0xFF020617),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                ),
-                child: const Text(
-                  'Proceed to Payment',
-                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900),
+                  child: const Text(
+                    'Proceed to Payment',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900),
+                  ),
                 ),
               ),
-            ),
+            ],
           ],
         );
       },
@@ -2162,74 +2425,6 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
     );
   }
 
-  void _showEditNameDialog() {
-    final TextEditingController controller = TextEditingController(
-      text: _userName,
-    );
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF0F172A),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-            side: const BorderSide(color: Color(0xFF1E293B)),
-          ),
-          title: const Text(
-            'Edit Profile Name',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-          ),
-          content: TextField(
-            controller: controller,
-            style: const TextStyle(color: Colors.white),
-            decoration: InputDecoration(
-              hintText: 'Enter new name',
-              hintStyle: const TextStyle(color: Color(0xFF475569)),
-              enabledBorder: UnderlineInputBorder(
-                borderSide: BorderSide(
-                  color: const Color(0xFF10B981).withOpacity(0.5),
-                ),
-              ),
-              focusedBorder: const UnderlineInputBorder(
-                borderSide: BorderSide(color: Color(0xFF10B981)),
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text(
-                'Cancel',
-                style: TextStyle(color: Color(0xFF94A3B8)),
-              ),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                if (controller.text.trim().isNotEmpty) {
-                  setState(() {
-                    _userName = controller.text.trim();
-                  });
-                  Navigator.pop(context);
-                  _showSnackBar("Profile updated: $_userName 🌿");
-                }
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF10B981),
-                foregroundColor: const Color(0xFF020617),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              child: const Text(
-                'Save',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
 
   Widget _buildProfileModalContent() {
     return Column(
@@ -2289,17 +2484,6 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
             color: Color(0xFF94A3B8),
             letterSpacing: 1,
           ),
-        ),
-        const SizedBox(height: 10),
-        _buildProfileOptionItem(
-          icon: Icons.edit,
-          iconColor: const Color(0xFF10B981),
-          title: 'Update Profile Name (Demo)',
-          subtitle: 'Change display name and update avatar initials',
-          onTap: () {
-            Navigator.pop(context);
-            _showEditNameDialog();
-          },
         ),
         const SizedBox(height: 10),
         _buildProfileOptionItem(

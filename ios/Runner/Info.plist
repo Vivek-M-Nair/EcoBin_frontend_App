@@ -66,5 +66,9 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>We need access to the camera to allow uploading damage photos and expense receipts.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>We need access to the photo library to pick damage photos and expense receipts.</string>
 </dict>
 </plist>

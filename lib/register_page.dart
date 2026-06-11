@@ -45,19 +45,8 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
   bool _isStepVerified = false;
   bool _isLoading = false;
 
-  final List<String> _propertyTypes = [
-    'House',
-    'Shop',
-    'Apartment',
-    'Building',
-  ];
-  final List<String> _districts = [
-    'Kottayam',
-    'Ernakulam',
-    'Thiruvananthapuram',
-    'Alappuzha',
-    'Kozhikode',
-  ];
+  final List<String> _propertyTypes = ['House', 'Shop'];
+  final List<String> _districts = ['Kottayam', 'Ernakulam'];
 
   /// Step 1 Handshake: Verifies property details with Spring Boot User Verification Endpoint
   Future<void> _verifyPropertyWithBackend() async {
@@ -555,7 +544,8 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
                                 Icons.phone_android_rounded,
                                 isNumeric: true,
                                 customValidator: (val) {
-                                  if (val == null || val.trim().isEmpty) return null;
+                                  if (val == null || val.trim().isEmpty)
+                                    return null;
                                   final phone = val.trim();
                                   final reg = RegExp(r'^\d{10}$');
                                   if (!reg.hasMatch(phone)) {
@@ -571,12 +561,16 @@ class _EcoBinRegisterPageState extends State<EcoBinRegisterPage> {
                                 "username@domain.com",
                                 Icons.alternate_email_rounded,
                                 customValidator: (val) {
-                                  if (val == null || val.trim().isEmpty) return null;
+                                  if (val == null || val.trim().isEmpty)
+                                    return null;
                                   final email = val.trim();
-                                  if (!email.contains('@') || !email.endsWith('.com')) {
+                                  if (!email.contains('@') ||
+                                      !email.endsWith('.com')) {
                                     return 'Email must contain @ and end with .com';
                                   }
-                                  final reg = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+                                  final reg = RegExp(
+                                    r'^[^@\s]+@[^@\s]+\.[^@\s]+$',
+                                  );
                                   if (!reg.hasMatch(email)) {
                                     return 'Enter a valid email address';
                                   }

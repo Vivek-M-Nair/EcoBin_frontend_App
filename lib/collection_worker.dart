@@ -1,9 +1,12 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'login_page.dart';
 import 'main.dart';
+import 'payment_page.dart';
 
 // --- DEVELOPMENT ISOLATED RUNTIME BADGE ---
 void main() => runApp(const TestWorkerApp());
@@ -106,6 +109,69 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
   final TextEditingController _incidentReportController = TextEditingController();
   final TextEditingController _leaveDateController = TextEditingController();
   final TextEditingController _leaveReasonController = TextEditingController();
+  String _expenseMockImageBase64 = "";
+  String _complaintMockImageBase64 = "";
+
+  final ImagePicker _picker = ImagePicker();
+
+  Future<void> _pickImage(ImageSource source, Function(String) onPicked) async {
+    try {
+      final XFile? image = await _picker.pickImage(
+        source: source,
+        maxWidth: 800,
+        imageQuality: 85,
+      );
+      if (image != null) {
+        final File file = File(image.path);
+        final int sizeInBytes = await file.length();
+        if (sizeInBytes > 2 * 1024 * 1024) {
+          _showSnackBar("⚠️ Image size exceeds the 2MB limit.");
+          return;
+        }
+        final bytes = await file.readAsBytes();
+        String base64String = base64Encode(bytes);
+        String formattedBase64 = "data:image/jpeg;base64,$base64String";
+        onPicked(formattedBase64);
+      }
+    } catch (e) {
+      _showSnackBar("Error picking image: $e");
+    }
+  }
+
+  void _showImageSourceDialog(Function(String) onPicked) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Select Image Source", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+        backgroundColor: const Color(0xFF0F172A),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: Color(0xFF1E293B)),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library, color: Color(0xFF10B981)),
+              title: const Text("Gallery", style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(context);
+                _pickImage(ImageSource.gallery, onPicked);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.camera_alt, color: Color(0xFF10B981)),
+              title: const Text("Camera", style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(context);
+                _pickImage(ImageSource.camera, onPicked);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -476,6 +542,39 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
 
   /// Sends the complete end-of-day revenue, metric balances, and expense reports to the server
   Future<void> _submitDayReportAndExpenses() async {
+    // 1. House lifted validation
+    final int? housesLifted = int.tryParse(_collectedCountController.text);
+    if (housesLifted == null || housesLifted < 0 || housesLifted > _assignedTotalHouseCount) {
+      _showSnackBar("⚠️ Houses Lifted must be a valid number between 0 and $_assignedTotalHouseCount.");
+      return;
+    }
+
+    // 2. Cash handled validation
+    final double? cashHandled = double.tryParse(_cashReceivedController.text);
+    if (cashHandled == null || cashHandled < 0) {
+      _showSnackBar("⚠️ Cash Handled must be a valid number.");
+      return;
+    }
+
+    // 3. Units pending validation
+    final int? unitsPending = int.tryParse(_pendingCountController.text);
+    int totalPendingInZone = _houseManifestList.where((h) => 
+      h['collectStatus'].toString().toLowerCase() == 'pending'
+    ).length;
+    if (unitsPending == null || unitsPending < 0 || unitsPending > totalPendingInZone) {
+      _showSnackBar("⚠️ Units Pending must be a valid number less than or equal to the total pending houses in this zone ($totalPendingInZone).");
+      return;
+    }
+
+    // 4. Route expense validation (optional field, but must be numeric if entered)
+    if (_expenseAmountController.text.trim().isNotEmpty) {
+      final double? routeExpense = double.tryParse(_expenseAmountController.text);
+      if (routeExpense == null || routeExpense < 0) {
+        _showSnackBar("⚠️ Route Expense must be a valid number.");
+        return;
+      }
+    }
+
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text(
@@ -506,8 +605,31 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
             'incidentLog': _incidentReportController.text,
           }),
         );
+
+        final double expenseAmt = double.tryParse(_expenseAmountController.text) ?? 0.0;
+        if (expenseAmt > 0) {
+          final expenseUrl = Uri.parse('http://10.181.174.87:8081/api/worker/expense');
+          final String payMethod = _selectedPaymentVectorOption.toLowerCase().contains("online") ? "online" : "cash";
+          final double cashAmt = double.tryParse(_cashReceivedController.text) ?? 0.0;
+          await http.post(
+            expenseUrl,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'workerId': _workerId,
+              'amount': expenseAmt,
+              'image': _expenseMockImageBase64,
+              'report': 'Day Report: ${_collectedCountController.text} collected, ${_pendingCountController.text} pending (${_pendingReasonController.text})',
+              'paymentMethod': payMethod,
+              'cashCollected': cashAmt,
+            }),
+          );
+        }
       } catch (_) {}
     }
+
+    setState(() {
+      _expenseMockImageBase64 = "";
+    });
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -905,7 +1027,8 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
         "assignedZoneId": "Zone A",
         "assignedPanchayath": "Grama Panchayath 12",
         "leaveRequestedDate": "2026-06-15",
-        "assignedDates": ["2026-06-10", "2026-06-12", "2026-06-14"]
+        "assignedDates": ["2026-06-10", "2026-06-12", "2026-06-14"],
+        "wardNumbers": [12, 14, 15]
       });
       return;
     }
@@ -949,8 +1072,18 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
   void _showScheduleDetailDialog(Map<String, dynamic> scheduleData) {
     final List<dynamic> dates = scheduleData['assignedDates'] ?? [];
     final String zone = scheduleData['assignedZoneId'] ?? 'N/A';
-    final String panchayath = scheduleData['assignedPanchayath'] ?? 'N/A';
+    String panchayath = scheduleData['assignedPanchayath'] ?? 'N/A';
+    if (panchayath == 'N/A' || panchayath.trim().isEmpty) {
+      final matchingAssignment = _assignments.firstWhere(
+        (a) => a['zoneId'] == zone,
+        orElse: () => <String, dynamic>{},
+      );
+      if (matchingAssignment.isNotEmpty) {
+        panchayath = matchingAssignment['localBodyName'] ?? 'N/A';
+      }
+    }
     final String leaveDate = scheduleData['leaveRequestedDate'] ?? 'None';
+    final List<dynamic> wardNumbers = scheduleData['wardNumbers'] ?? [];
 
     showDialog(
       context: context,
@@ -1020,7 +1153,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        "Panchayath: $panchayath",
+                        "Panchayath/Municipality: $panchayath (Wards: ${wardNumbers.isNotEmpty ? wardNumbers.join(', ') : 'N/A'})",
                         style: const TextStyle(
                           fontSize: 11,
                           color: Color(0xFF94A3B8),
@@ -1498,7 +1631,7 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
             ),
             actions: [
               TextButton(
-                onPressed: () => _handleSkippedLiftAction(index),
+                onPressed: () => _handleSkippedLiftAction(index, fromDialog: true),
                 child: const Text(
                   "Skip / Exception",
                   style: TextStyle(
@@ -1571,8 +1704,10 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
     );
   }
 
-  void _handleSkippedLiftAction(int index) {
-    Navigator.pop(context);
+  void _handleSkippedLiftAction(int index, {bool fromDialog = false}) {
+    if (fromDialog) {
+      Navigator.pop(context);
+    }
     final TextEditingController reasonController = TextEditingController();
     showDialog(
       context: context,
@@ -1611,6 +1746,22 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
               setState(() {
                 _houseManifestList[index]['collectStatus'] = "Skipped";
               });
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    "House ${_houseManifestList[index]['houseNo']} skipped.",
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  backgroundColor: const Color(0xFFF43F5E),
+                  behavior: SnackBarBehavior.floating,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              );
               await _syncCollectionStatusToBackend(
                 _houseManifestList[index]['houseNo'],
                 "Skipped",
@@ -1847,8 +1998,20 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
             itemBuilder: (context, index) {
               final area = _assignments[index];
               final String zoneId = area['zoneId'] ?? 'N/A';
-              final String zoneName = area['zoneName'] ?? 'Unnamed Zone';
-              final String address = area['address'] ?? 'No Address';
+              final String zoneName = (area['zoneName'] != null && area['zoneName'].toString().isNotEmpty && area['zoneName'] != 'Unnamed Zone')
+                  ? area['zoneName']
+                  : zoneId;
+              
+              String address = area['address'] ?? 'No Address';
+              if (address == 'No Address' && area['localBodyName'] != null) {
+                final String localBody = area['localBodyName'];
+                final List<dynamic>? wardNumbers = area['wardNumbers'];
+                if (wardNumbers != null && wardNumbers.isNotEmpty) {
+                  address = "$localBody (Ward ${wardNumbers.join(', ')})";
+                } else {
+                  address = localBody;
+                }
+              }
               
               return InkWell(
                 onTap: () {
@@ -2105,7 +2268,12 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                           'houseNo': h['houseNumber'] ?? h['houseNo'] ?? '',
                           'wardNo': h['wardNumber'] ?? h['wardNo'] ?? 0,
                           'owner': h['ownerName'] ?? h['owner'] ?? '',
-                          'paymentStatus': (h['paymentStatus'] as String?)?.toLowerCase() == 'paid' ? 'Paid' : 'Pending',
+                          'paymentStatus': ((h['amountPending'] as num?)?.toDouble() == 0.0 ||
+                                            (h['paymentStatus'] as String?)?.toLowerCase() == 'paid' ||
+                                            (h['collectionStatus'] as String?)?.toLowerCase() == 'paid' ||
+                                            (h['collectionStatus'] as String?)?.toLowerCase() == 'paid_via_points')
+                                                ? 'Paid'
+                                                : 'Pending',
                           'feeAmount': (h['amountPending'] as num?)?.toDouble() ?? 0.0,
                           'collectStatus': _capitalize(h['collectionStatus'] ?? 'Pending'),
                         });
@@ -2279,7 +2447,32 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                           borderRadius: BorderRadius.circular(8),
                         ),
                       ),
-                      onPressed: () => _handleSkippedLiftAction(index),
+                      onPressed: () async {
+                        setState(() {
+                          _houseManifestList[index]['collectStatus'] = "Skipped";
+                        });
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              "House ${_houseManifestList[index]['houseNo']} skipped.",
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            backgroundColor: const Color(0xFFF43F5E),
+                            behavior: SnackBarBehavior.floating,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        );
+                        await _syncCollectionStatusToBackend(
+                          _houseManifestList[index]['houseNo'],
+                          "Skipped",
+                          exceptionReason: "Skipped from manifest tracking",
+                        );
+                      },
                       child: const Text(
                         'Skip',
                         style: TextStyle(
@@ -2427,7 +2620,19 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                     borderRadius: BorderRadius.circular(12),
                   ),
                 ),
-                onPressed: () {},
+                onPressed: () {
+                  final double cashAmount = double.tryParse(_cashReceivedController.text.trim()) ?? 0.0;
+                  if (cashAmount <= 0.0) {
+                    _showSnackBar("⚠️ Please enter a valid Cash Handled amount first.");
+                    return;
+                  }
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => PaymentPage(amountToPay: cashAmount),
+                    ),
+                  );
+                },
                 icon: const Icon(Icons.payment_rounded, size: 16),
                 label: const Text(
                   "Launch Digital Remittance Portal",
@@ -2480,31 +2685,53 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: Container(
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF020617),
-                    border: Border.all(color: const Color(0xFF1E293B)),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: const [
-                      Icon(
-                        Icons.camera_alt_rounded,
-                        color: Color(0xFF475569),
-                        size: 16,
+                child: InkWell(
+                  onTap: () {
+                    _showImageSourceDialog((base64String) {
+                      setState(() {
+                        _expenseMockImageBase64 = base64String;
+                      });
+                    });
+                  },
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF020617),
+                      border: Border.all(
+                        color: _expenseMockImageBase64.isNotEmpty
+                            ? const Color(0xFF10B981)
+                            : const Color(0xFF1E293B),
                       ),
-                      SizedBox(width: 6),
-                      Text(
-                        "Upload Voucher",
-                        style: TextStyle(
-                          color: Color(0xFF94A3B8),
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          _expenseMockImageBase64.isNotEmpty
+                              ? Icons.check_circle_rounded
+                              : Icons.camera_alt_rounded,
+                          color: _expenseMockImageBase64.isNotEmpty
+                              ? const Color(0xFF10B981)
+                              : const Color(0xFF475569),
+                          size: 16,
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 6),
+                        Text(
+                          _expenseMockImageBase64.isNotEmpty
+                              ? "Voucher Attached"
+                              : "Upload Voucher",
+                          style: TextStyle(
+                            color: _expenseMockImageBase64.isNotEmpty
+                                ? const Color(0xFF10B981)
+                                : const Color(0xFF94A3B8),
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -2628,11 +2855,11 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
           const SizedBox(height: 12),
           InkWell(
             onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text("Optional camera portal opened. 📸"),
-                ),
-              );
+              _showImageSourceDialog((base64String) {
+                setState(() {
+                  _complaintMockImageBase64 = base64String;
+                });
+              });
             },
             borderRadius: BorderRadius.circular(12),
             child: Container(
@@ -2640,24 +2867,32 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
               decoration: BoxDecoration(
                 color: const Color(0xFF020617),
                 border: Border.all(
-                  color: const Color(0xFF334155),
+                  color: _complaintMockImageBase64.isNotEmpty
+                      ? const Color(0xFF10B981)
+                      : const Color(0xFF334155),
                   style: BorderStyle.solid,
                 ),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
-                children: const [
+                children: [
                   Icon(
-                    Icons.add_a_photo_outlined,
-                    color: Color(0xFF10B981),
+                    _complaintMockImageBase64.isNotEmpty
+                        ? Icons.check_circle_rounded
+                        : Icons.add_a_photo_outlined,
+                    color: const Color(0xFF10B981),
                     size: 16,
                   ),
-                  SizedBox(width: 8),
+                  const SizedBox(width: 8),
                   Text(
-                    "Upload Complaint Photo (Optional)",
+                    _complaintMockImageBase64.isNotEmpty
+                        ? "Photo Attached Successfully"
+                        : "Upload Complaint Photo (Optional)",
                     style: TextStyle(
-                      color: Color(0xFF94A3B8),
+                      color: _complaintMockImageBase64.isNotEmpty
+                          ? const Color(0xFF10B981)
+                          : const Color(0xFF94A3B8),
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
                     ),
@@ -2696,11 +2931,14 @@ class _CollectionWorkerPageState extends State<CollectionWorkerPage> {
                     body: jsonEncode({
                       'userId': _workerId,
                       'complaintDescription': 'Worker Incident: ' + reportStr,
-                      'image': '',
+                      'image': _complaintMockImageBase64,
                     }),
                   );
                   if (response.statusCode == 200) {
                     _incidentReportController.clear();
+                    setState(() {
+                      _complaintMockImageBase64 = "";
+                    });
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
                         content: Text(
@@ -3276,6 +3514,8 @@ class _ZoneHousesDetailScreenState extends State<ZoneHousesDetailScreen> {
             itemBuilder: (context, index) {
               final house = houses[index];
               final String houseId = house['houseId'] ?? house['houseNo'] ?? 'N/A';
+              final String houseName = house['houseName'] ?? '';
+              final String houseDisplayName = houseName.isNotEmpty ? houseName : houseId;
               final String owner = house['ownerName'] ?? house['owner'] ?? 'Unknown Owner';
               final String address = house['address'] ?? 'No Address';
               final String status = house['status'] ?? house['collectStatus'] ?? 'Pending';
@@ -3294,28 +3534,29 @@ class _ZoneHousesDetailScreenState extends State<ZoneHousesDetailScreen> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          "House: $houseId",
+                          "House: $houseDisplayName",
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 14,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: _getStatusColor(status).withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            status.toUpperCase(),
-                            style: TextStyle(
-                              color: _getStatusColor(status),
-                              fontSize: 9,
-                              fontWeight: FontWeight.bold,
+                        if (status.toLowerCase() != 'pending')
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: _getStatusColor(status).withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              status.toUpperCase(),
+                              style: TextStyle(
+                                color: _getStatusColor(status),
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ),
-                        ),
                       ],
                     ),
                     const SizedBox(height: 8),

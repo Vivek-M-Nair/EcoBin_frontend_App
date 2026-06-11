@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 import 'splash_screen.dart';
 import 'login_page.dart';
 import 'payment_page.dart';
@@ -53,6 +55,8 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
   bool _isPaymentDone = false;
   int _selectedRating = 0;
   bool _isMissionJoined = false;
+  String _redeemErrorMsg = "";
+  bool _isGuest = false;
 
   String _userName = "User Account";
   String _currentUserId = "";
@@ -68,6 +72,68 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
   final TextEditingController _feedbackTextController = TextEditingController();
   final TextEditingController _immediateRequestReasonController =
       TextEditingController();
+  String _complaintMockImageBase64 = "";
+
+  final ImagePicker _picker = ImagePicker();
+
+  Future<void> _pickImage(ImageSource source, Function(String) onPicked) async {
+    try {
+      final XFile? image = await _picker.pickImage(
+        source: source,
+        maxWidth: 800,
+        imageQuality: 85,
+      );
+      if (image != null) {
+        final File file = File(image.path);
+        final int sizeInBytes = await file.length();
+        if (sizeInBytes > 2 * 1024 * 1024) {
+          _showSnackBar("⚠️ Image size exceeds the 2MB limit.");
+          return;
+        }
+        final bytes = await file.readAsBytes();
+        String base64String = base64Encode(bytes);
+        String formattedBase64 = "data:image/jpeg;base64,$base64String";
+        onPicked(formattedBase64);
+      }
+    } catch (e) {
+      _showSnackBar("Error picking image: $e");
+    }
+  }
+
+  void _showImageSourceDialog(Function(String) onPicked) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Select Image Source", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+        backgroundColor: const Color(0xFF0F172A),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: Color(0xFF1E293B)),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library, color: Color(0xFF10B981)),
+              title: const Text("Gallery", style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(context);
+                _pickImage(ImageSource.gallery, onPicked);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.camera_alt, color: Color(0xFF10B981)),
+              title: const Text("Camera", style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(context);
+                _pickImage(ImageSource.camera, onPicked);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -83,6 +149,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
     if (widget.loginData.isNotEmpty &&
         widget.loginData['status'] == 'success') {
       setState(() {
+        _isGuest = widget.loginData['isGuest'] == true;
         // 1. FIRST ASIGN THE CURRENT USER ID SO THE DASHBOARD CAN TALK TO MONGO
         _currentUserId = widget.loginData['houseId'] ?? widget.loginData['userId'] ?? "";
 
@@ -138,6 +205,9 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                 data['assignedWorkerName'] ?? "Not yet assigned";
             _amountDue = (data['amountPending'] as num).toDouble();
             _isPaymentDone = data['paymentStatus'] == 'paid' || _amountDue <= 0;
+            if (data['points'] != null) {
+              _ecoPoints = (data['points'] as num).toInt();
+            }
 
             if (data['last10CollectedDates'] != null) {
               _historicalDates = List<String>.from(
@@ -1173,6 +1243,10 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                       onPressed: _isMissionJoined
                           ? null
                           : () {
+                              if (_isGuest) {
+                                _showSnackBar("⚠️ Guest users cannot join missions. Please register to unlock all features.");
+                                return;
+                              }
                               setState(() {
                                 _isMissionJoined = true;
                                 _ecoPoints += 150;
@@ -1316,6 +1390,10 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                 width: double.infinity,
                 child: ElevatedButton(
                   onPressed: () async {
+                    if (_isGuest) {
+                      _showSnackBar("⚠️ Guest users cannot submit feedback. Please register to unlock all features.");
+                      return;
+                    }
                     if (_selectedRating == 0) {
                       _showSnackBar("Please select a star rating first!");
                       return;
@@ -1440,14 +1518,28 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
               'Submit Complaint / Report',
               _buildComplaintModalContent(),
             );
-          if (index == 4)
+          if (index == 4) {
+            _redeemErrorMsg = "";
             _showActionModal('Redeem Rewards', _buildRedeemModalContent());
+          }
         },
       ),
     );
   }
 
   void _showActionModal(String title, Widget content) {
+    if (_isGuest && !title.toLowerCase().contains("complaint") && title != "Account Options") {
+      _showSnackBar("⚠️ Guest users can only access the Complaints feature. Please register to unlock all features.");
+      return;
+    }
+    if (title == 'Request Collection') {
+      if (_zoneLastCollectedDate.isEmpty || 
+          _zoneLastCollectedDate.toLowerCase() == 'never' || 
+          _zoneLastCollectedDate.toLowerCase() == 'n/a') {
+        _showSnackBar("⚠️ You cannot request waste collection because there is no collection history for your zone.");
+        return;
+      }
+    }
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1574,9 +1666,14 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                           }),
                         );
                         if (response.statusCode == 200) {
+                          final Map<String, dynamic> resData = jsonDecode(response.body);
                           setState(() {
                             _isPaymentDone = true;
-                            _ecoPoints += 50;
+                            if (resData['availablePoints'] != null) {
+                              _ecoPoints = (resData['availablePoints'] as num).toInt();
+                            } else {
+                              _ecoPoints += 50;
+                            }
                           });
                           _showSnackBar(
                             "💳 Payment recorded! Balance successfully settled.",
@@ -2183,32 +2280,52 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                 ),
               ),
             ),
-            const SizedBox(height: 12),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF020617),
-                border: Border.all(color: const Color(0xFF1E293B)),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Column(
-                children: const [
-                  Text('📸', style: TextStyle(fontSize: 20)),
-                  SizedBox(height: 4),
-                  Text(
-                    'Upload Damage Photo / Proof',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFFE2E8F0),
+            InkWell(
+              onTap: () {
+                _showImageSourceDialog((base64String) {
+                  setModalState(() {
+                    _complaintMockImageBase64 = base64String;
+                  });
+                });
+              },
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF020617),
+                  border: Border.all(
+                    color: _complaintMockImageBase64.isNotEmpty
+                        ? const Color(0xFF10B981)
+                        : const Color(0xFF1E293B),
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  children: [
+                    Text(
+                      _complaintMockImageBase64.isNotEmpty ? '✅' : '📸',
+                      style: const TextStyle(fontSize: 20),
                     ),
-                  ),
-                  Text(
-                    'Tap to browse files',
-                    style: TextStyle(fontSize: 8, color: Color(0xFF475569)),
-                  ),
-                ],
+                    const SizedBox(height: 4),
+                    Text(
+                      _complaintMockImageBase64.isNotEmpty
+                          ? 'Photo Attached Successfully'
+                          : 'Upload Damage Photo / Proof',
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFFE2E8F0),
+                      ),
+                    ),
+                    Text(
+                      _complaintMockImageBase64.isNotEmpty
+                          ? 'Tap again to change photo'
+                          : 'Tap to browse files',
+                      style: const TextStyle(fontSize: 8, color: Color(0xFF475569)),
+                    ),
+                  ],
+                ),
               ),
             ),
             const SizedBox(height: 16),
@@ -2232,7 +2349,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                       body: jsonEncode({
                         'userId': _currentUserId,
                         'complaintDescription': '[$selectedComplaintType] ${_complaintTextController.text.trim()}',
-                        'image': '',
+                        'image': _complaintMockImageBase64,
                       }),
                     );
                     if (response.statusCode == 200) {
@@ -2243,6 +2360,7 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                         "📋 Ticket logged successfully! ID: ${resData['complaintId'] ?? 'Registered'}",
                       );
                       _complaintTextController.clear();
+                      _complaintMockImageBase64 = "";
                     } else {
                       _showSnackBar("❌ Submission rejected by server controller.");
                     }
@@ -2273,40 +2391,77 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
   }
 
   Widget _buildRedeemModalContent() {
-    return Column(
-      children: [
-        _buildRedeemItem(
-          '🌲',
-          'Sponsor 1 Forest Tree',
-          'Planted in dry ecological zones',
-          100,
-          () => _handleRedeem(100, 'Sponsor 1 Forest Tree'),
-        ),
-        const SizedBox(height: 8),
-        _buildRedeemItem(
-          '☕',
-          'Reusable Ceramic Mug',
-          'Collect at local green outlets',
-          250,
-          () => _handleRedeem(250, 'Reusable Ceramic Mug'),
-        ),
-        const SizedBox(height: 8),
-        _buildRedeemItem(
-          '🎫',
-          '\$10 Waste Fee Waiver',
-          'Deducted automatically from bills',
-          500,
-          () => _handleRedeem(500, '\$10 Waste Fee Waiver'),
-        ),
-      ],
+    return StatefulBuilder(
+      builder: (context, setModalState) {
+        return Column(
+          children: [
+            if (_redeemErrorMsg.isNotEmpty) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF43F5E).withOpacity(0.1),
+                  border: Border.all(color: const Color(0xFFF43F5E).withOpacity(0.3)),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.error_outline, color: Color(0xFFFDA4AF), size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _redeemErrorMsg,
+                        style: const TextStyle(
+                          color: Color(0xFFFDA4AF),
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            _buildRedeemItem(
+              '🌲',
+              'Sponsor 1 Forest Tree',
+              'Planted in dry ecological zones',
+              100,
+              () => _handleRedeem(100, 'Sponsor 1 Forest Tree', setModalState),
+            ),
+            const SizedBox(height: 8),
+            _buildRedeemItem(
+              '☕',
+              'Reusable Ceramic Mug',
+              'Collect at local green outlets',
+              250,
+              () => _handleRedeem(250, 'Reusable Ceramic Mug', setModalState),
+            ),
+            const SizedBox(height: 8),
+            _buildRedeemItem(
+              '🎫',
+              '\$10 Waste Fee Waiver',
+              'Deducted automatically from bills',
+              500,
+              () => _handleRedeem(500, '\$10 Waste Fee Waiver', setModalState),
+            ),
+          ],
+        );
+      },
     );
   }
 
-  void _handleRedeem(int cost, String rewardName) async {
+  void _handleRedeem(int cost, String rewardName, StateSetter setModalState) async {
     if (_ecoPoints < cost) {
-      _showSnackBar("⚠️ Insufficient EcoPoints for this reward.");
+      setModalState(() {
+        _redeemErrorMsg = "sorry not enough point";
+      });
       return;
     }
+    setModalState(() {
+      _redeemErrorMsg = "";
+    });
     Navigator.pop(context);
     _showSnackBar("Processing token voucher conversion... 🌲");
 
@@ -2392,7 +2547,14 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
                       _ecoPoints = 0;
                     });
                     Navigator.of(context).pop();
-                    Navigator.of(this.context).pop();
+                    Navigator.of(this.context).pushReplacement(
+                      MaterialPageRoute(
+                        builder: (context) => const EcoBinLoginPage(
+                          userDashboardScreen: EcoBinHomePage(),
+                          workerDashboardScreen: CollectionWorkerPage(),
+                        ),
+                      ),
+                    );
                     _showSnackBar(
                       "⚠️ Account data permanently removed from server cluster.",
                     );
@@ -2486,34 +2648,54 @@ class _EcoBinHomePageState extends State<EcoBinHomePage> {
           ),
         ),
         const SizedBox(height: 10),
-        _buildProfileOptionItem(
-          icon: Icons.logout,
-          iconColor: const Color(0xFFF59E0B),
-          title: 'Sign Out / Logout',
-          subtitle: 'Disconnect your account from this device',
-          onTap: () {
-            Navigator.pop(context);
-            Navigator.of(context).pushReplacement(
-              MaterialPageRoute(
-                builder: (context) => const EcoBinLoginPage(
-                  userDashboardScreen: EcoBinHomePage(),
-                  workerDashboardScreen: CollectionWorkerPage(),
+        if (_isGuest)
+          _buildProfileOptionItem(
+            icon: Icons.login,
+            iconColor: const Color(0xFF10B981),
+            title: 'Login',
+            subtitle: 'Sign in to access all features',
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.of(context).pushReplacement(
+                MaterialPageRoute(
+                  builder: (context) => const EcoBinLoginPage(
+                    userDashboardScreen: EcoBinHomePage(),
+                    workerDashboardScreen: CollectionWorkerPage(),
+                  ),
                 ),
-              ),
-            );
-            _showSnackBar("👋 Logged out successfully.");
-          },
-        ),
-        const SizedBox(height: 10),
-        _buildProfileOptionItem(
-          icon: Icons.delete_forever,
-          iconColor: const Color(0xFFF43F5E),
-          title: 'Delete Account',
-          subtitle: 'Permanently remove your account and data',
-          onTap: () {
-            _showDeleteAccountConfirmationDialog();
-          },
-        ),
+              );
+            },
+          )
+        else ...[
+          _buildProfileOptionItem(
+            icon: Icons.logout,
+            iconColor: const Color(0xFFF59E0B),
+            title: 'Sign Out / Logout',
+            subtitle: 'Disconnect your account from this device',
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.of(context).pushReplacement(
+                MaterialPageRoute(
+                  builder: (context) => const EcoBinLoginPage(
+                    userDashboardScreen: EcoBinHomePage(),
+                    workerDashboardScreen: CollectionWorkerPage(),
+                  ),
+                ),
+              );
+              _showSnackBar("👋 Logged out successfully.");
+            },
+          ),
+          const SizedBox(height: 10),
+          _buildProfileOptionItem(
+            icon: Icons.delete_forever,
+            iconColor: const Color(0xFFF43F5E),
+            title: 'Delete Account',
+            subtitle: 'Permanently remove your account and data',
+            onTap: () {
+              _showDeleteAccountConfirmationDialog();
+            },
+          ),
+        ],
       ],
     );
   }

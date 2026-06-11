@@ -551,6 +551,30 @@ class _EcoBinLoginPageState extends State<EcoBinLoginPage> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 12),
+                TextButton(
+                  onPressed: () {
+                    _handleRoleRouting("user_page", "Guest User", {
+                      "status": "success",
+                      "page": "user_page",
+                      "isGuest": true,
+                      "userId": "guest",
+                      "houseId": "guest",
+                      "userName": "Guest User",
+                      "points": 0,
+                      "pendingPayment": 0.0,
+                    });
+                  },
+                  child: const Text(
+                    'Login as Guest User',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF64748B),
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
